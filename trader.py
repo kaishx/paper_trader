@@ -15,7 +15,7 @@ print = lambda *args, **kwargs: builtins.print(*args, **kwargs, flush=True)
 
 # Alpaca
 from alpaca.data import StockHistoricalDataClient, TimeFrame, TimeFrameUnit
-from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest  # <-- REQUIRED IMPORT ADDED HERE
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.enums import DataFeed
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
@@ -40,8 +40,8 @@ TELEGRAM_CHAT_ID = "XXX" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 #ASSET_B = sys.argv[2]
 
 # FOR DEBUG
-ASSET_A = "GOOG"
-ASSET_B = "GOOGL"
+#ASSET_A = "GOOG"
+#ASSET_B = "GOOGL"
 
 print(f"Trader started for pair: {ASSET_A}/{ASSET_B}")
 
