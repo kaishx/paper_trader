@@ -5,12 +5,7 @@ import threading
 
 # pairs down here. template for how to write it: ("XXX", "YYY")
 TRADER_PAIRS = [
-    ("UDR", "AVB"),
-    ("GOOG", "GOOGL"),
-    ("ORCL", "IBM"),
-    ("SLB", "HAL"),
-    ("SPHY", "USHY")
-    ("AOS", "MAS")
+    ("XXX", "YYY")
     ]
 
 TRADER_SCRIPT = "trader.py"  # maincontroller points to trader
