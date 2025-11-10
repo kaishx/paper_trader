@@ -100,9 +100,6 @@ def send_tele(message, alert_type="INFO"):
 
 
 def load_optimal_params(file_path='optimized_params.json'):
-    """
-    finds and loads the opt params
-    """
     global Z_ENTRY, Z_EXIT, Z_STOP_LOSS, LOOKBACK_WINDOW
 
     try:
@@ -193,7 +190,6 @@ def get_raw(symbol, start, end, timeframe):
 
 
 def filters_data(asset_a, asset_b, lookback, timeframe=TimeFrame(1, TimeFrameUnit.Minute)):
-    """gets the data"""
     try:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=(lookback // (390 * 5) + 5))
@@ -230,7 +226,6 @@ def filters_data(asset_a, asset_b, lookback, timeframe=TimeFrame(1, TimeFrameUni
 
 def calculate_latest_signal(data):
     """calculates buncha stuff, namely zscore, beta, spread vol, and adf"""
-
     y_series = data['Log_A']
     x_series = data['Log_B']
 
@@ -262,9 +257,6 @@ def calculate_latest_signal(data):
 
 
 def get_latest_prices_realtime(asset_a, asset_b):
-    """
-    uses midquote to get the prices RIGHT NOW.
-    """
     symbols = [asset_a, asset_b]
     price_a, price_b = np.nan, np.nan
 
@@ -300,7 +292,6 @@ def get_latest_prices_realtime(asset_a, asset_b):
 # trading functions BELOW
 
 def get_current_position(asset_a, asset_b):
-    """gets current position for this particular pair from alpaca via the API"""
     try:
         positions = trading_client.get_all_positions()
 
@@ -332,7 +323,6 @@ def get_current_position(asset_a, asset_b):
 
 
 def print_pnl_stats():
-    """this function is for getting the equity stats"""
     equity = np.nan
     pnl_today = np.nan
     try:
@@ -456,8 +446,6 @@ def submit_order(symbol, qty, side, wait_interval=1, max_wait_seconds=15):
 
 
 def liquidate(reason="No reason provided."):
-    """closes all open posiitons"""
-
     equity_pre, pnl_today_pre = print_pnl_stats()
 
     try:
@@ -489,9 +477,7 @@ def liquidate(reason="No reason provided."):
 
 def log_status(current_z, beta, p_value, price_a, price_b, position, pos_qty_a, pos_qty_b, portfolio_equity,
                          loop_start_time, is_rth):
-    """
-    logs current status and sends it to tele
-    """
+
     global last_heartbeat_time
 
     # determine rth status
