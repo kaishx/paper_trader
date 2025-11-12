@@ -1,5 +1,5 @@
 # paper_trader
-Contains the Walk-Forward Analysis code, some utilities, Paper-trader code (both interacting with Alpaca), Controller code (controls ~5-6 paper-traders), as well as a small write-up about my methodologies and limitations. 
+Contains the Paper-trader code (both interacting with Alpaca), Controller code (controls ~5-6 paper-traders), and some utlities.
 
 Results can be found in the telegram channel in the README.
 
