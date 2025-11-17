@@ -33,8 +33,8 @@ ADF_THRESHOLD = 0.05  # MAX ADF value, can edit to 0.1 if want 2 play more loose
 TELEGRAM_BOT_TOKEN = "xxx" #1st bot HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 TELEGRAM_CHAT_ID = "xxx" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
-#TELEGRAM_BOT_TOKEN = "8554251209:AAHvHuD7C0q5dyJWi2Gl2LpoWO6gV1-EQYw" #2nd bot
-# TELEGRAM_CHAT_ID = "-1003289508299" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+#TELEGRAM_BOT_TOKEN = "xxx" #2nd bot
+# TELEGRAM_CHAT_ID = "xxx" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
 # keep this here so i can paste it back everytime i remove above to debug through trader.py without goin thru the controller
 if len(sys.argv) != 3:
