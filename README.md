@@ -1,11 +1,16 @@
 # Paper Trading Algorithm
-Contains the Paper-trader code (both interacting with Alpaca), Multi-agent controller code (controls ~5-6 paper-traders), and some utlities. The system interacts with the Alpaca API to simulate live mean-reversion trading and monitor equity/positions in real time.
 
-Results can be found in the telegram channel in the README.
+This repository contains:
 
+Paper-Trader Code: Interacts with the Alpaca API to simulate live mean-reversion trading.
 
-Channel (Outputs the current equity as well as any positions every few minutes):
-https://t.me/+12M82bTPLAtjMzZl
+Multi-Agent Controller: Manages ~5–6 paper-traders concurrently.
 
-*Code written by me with assistance from AI. All mathematical logic was reviewed and verified manually.*
-*This project is a proof of concept and still contains bugs and heuristic parameter choices.*
+Utilities: Additional scripts and tools to support trading and analysis.
+
+The system monitors equity and positions in real time. Results can be viewed on our Telegram channel:
+
+[Telegram Channel (equity & positions updates every few minutes)](https://t.me/+12M82bTPLAtjMzZl)
+
+> **Note:** All code was written by me with assistance from AI. All mathematical logic has been manually reviewed and verified. This project is a proof of concept and may still contain bugs and heuristic parameter choices.
+
