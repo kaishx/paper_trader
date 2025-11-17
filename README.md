@@ -10,7 +10,7 @@
 
 ---
 
-**The system monitors equity and positions in real time. Results can be viewed on our Telegram channel:**
+**The system monitors equity and positions in real time. Results can be viewed on my Telegram channel:**
 
 [Telegram Channel (equity & positions updates every few minutes)](https://t.me/+12M82bTPLAtjMzZl)
 
