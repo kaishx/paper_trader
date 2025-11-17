@@ -23,16 +23,18 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 
 #config BELOW
 
-API_KEY_ID = "XXX" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-API_SECRET_KEY = "XXX" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+# api
+API_KEY_ID = "xxx"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_SECRET_KEY = "xxx"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+
 PAPER_TRADING = True  # paper trading only, no real money lol
 ADF_THRESHOLD = 0.05  # MAX ADF value, can edit to 0.1 if want 2 play more loosely.
 
-TELEGRAM_BOT_TOKEN = "XXX" #1st bot HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-TELEGRAM_CHAT_ID = "XXX" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+TELEGRAM_BOT_TOKEN = "xxx" #1st bot HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+TELEGRAM_CHAT_ID = "xxx" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
-#TELEGRAM_BOT_TOKEN = "XXX" #2nd bot
-#TELEGRAM_CHAT_ID = "XXX" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+#TELEGRAM_BOT_TOKEN = "xxx" #2nd bot
+#TELEGRAM_CHAT_ID = "xxx" #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
 # keep this here so i can paste it back everytime i remove above to debug through trader.py without goin thru the controller
 if len(sys.argv) != 3:
@@ -67,6 +69,20 @@ Z_EXIT = None
 Z_STOP_LOSS = None
 LOOKBACK_WINDOW = None
 
+# Static model cache & config
+MODEL_CACHE = {
+    'last_update_ts': None,
+    'model_type': None,   # 'A_on_B' or 'B_on_A'
+    'beta': None,
+    'intercept': None,
+    'adf_pvalue': None,
+    'variance': None
+}
+
+MODEL_UPDATE_SECONDS = 60 * 60 * 24
+BETA_LOOKBACK_MIN = 5000
+Z_WINDOW = 1000 # completely fucking arbitrary, idk what im doing lol
+
 last_heartbeat_time = datetime.min.replace(tzinfo=timezone.utc)
 
 data_client = StockHistoricalDataClient(API_KEY_ID, API_SECRET_KEY)
@@ -76,20 +92,20 @@ entry_price_a = None
 entry_price_b = None
 entry_pos_type = None
 
+
 def send_tele(message, alert_type="INFO"):
     """this function is for sending all the tele alerts"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-    # emojis in the tele msg so its better for visibility when searrching for certain types of msges
     emoji_map = {
-        "INFO": "ℹ️",
-        "SUCCESS": "✅",
-        "ENTRY": "🟢",
-        "EXIT": "🔴",
-        "STOP": "🛑",
-        "ERROR": "❌",
-        "WARNING": "⚠️",
-        "MARKET": "😴"
+        "INFO": "",
+        "SUCCESS": "",
+        "ENTRY": "",
+        "EXIT": "",
+        "STOP": "",
+        "ERROR": "",
+        "WARNING": "",
+        "MARKET": ""
     }
 
     # format msg
@@ -121,7 +137,8 @@ def load_param(file_path='optimized_params.json'):
         with open(file_path, 'r') as f:
             params = json.load(f)
 
-        LOOKBACK_WINDOW = params.get('metadata', {}).get('rolling_window_bars', 252)
+        # keep a reasonably large default; optimizer can override
+        LOOKBACK_WINDOW = params.get('metadata', {}).get('rolling_window_bars', 5000)
 
         # search for the matching pair (SUPER impt: the order really matters so main controller pair order for asset A and B MUST BE THE SAME as the order in z optimizerr, if not this will tweak out)
         found = False
@@ -147,6 +164,7 @@ def load_param(file_path='optimized_params.json'):
     except Exception as e:
         print(f"failed to load parameters from JSON: {e}")
         return False
+
 
 def get_raw(symbol, start, end, timeframe):
     """fetches data from alpaca iex (pretty shit but too bad SIP is paid) and fallback to yahoo if fails"""
@@ -238,36 +256,107 @@ def filters_data(asset_a, asset_b, lookback, timeframe=TimeFrame(1, TimeFrameUni
         return None
 
 
-def calculateSignal(data):
-    y_series = data['Log_A']
-    x_series = data['Log_B']
+def choose_best_spread(data):
 
-    # beta calc
+    logA = data['Log_A']
+    logB = data['Log_B']
+
+    results = []
+
     try:
-        slope, intercept, _, _, stderr = linregress(x_series, y_series)
-    except ValueError:
+        slope1, intercept1, _, _, _ = linregress(logB, logA)
+        spread1 = logA - (intercept1 + slope1 * logB)
+        adf1 = adfuller(spread1.dropna(), autolag='AIC')[1]
+        var1 = spread1.var()
+        results.append(("A_on_B", slope1, intercept1, spread1, adf1, var1))
+    except Exception:
+        pass
+
+    try:
+        slope2, intercept2, _, _, _ = linregress(logA, logB)
+        spread2 = logB - (intercept2 + slope2 * logA)
+        adf2 = adfuller(spread2.dropna(), autolag='AIC')[1]
+        var2 = spread2.var()
+        results.append(("B_on_A", slope2, intercept2, spread2, adf2, var2))
+    except Exception:
+        pass
+
+    if len(results) == 0:
+        return None
+
+    results = sorted(results, key=lambda x: (x[4], x[5]))
+
+    return results[0]
+
+
+def compute_static_model(data):
+    global MODEL_CACHE, MODEL_UPDATE_SECONDS, BETA_LOOKBACK_MIN
+
+    now_ts = time.time()
+    last_ts = MODEL_CACHE.get('last_update_ts')
+
+    if last_ts is not None and (now_ts - last_ts) < MODEL_UPDATE_SECONDS:
+        return MODEL_CACHE
+
+    beta_lb = max(BETA_LOOKBACK_MIN, LOOKBACK_WINDOW or 0)
+    slice_len = min(len(data), beta_lb)
+    if slice_len < 50:
+        return MODEL_CACHE
+
+    long_data = data.iloc[-slice_len:]
+
+    best = choose_best_spread(long_data)
+    if best is None:
+        return MODEL_CACHE
+
+    model_type, beta, intercept, spread_series, adf_pvalue, variance = best
+
+    MODEL_CACHE.update({
+        'last_update_ts': now_ts,
+        'model_type': model_type,
+        'beta': beta,
+        'intercept': intercept,
+        'adf_pvalue': adf_pvalue,
+        'variance': variance
+    })
+
+    print(f"[MODEL CACHE] Updated model_type={model_type}, beta={beta:.6f}, adf_p={adf_pvalue:.4f}, var={variance:.6e}")
+    return MODEL_CACHE
+
+
+def calculateSignal(data):
+
+    compute_static_model(data)
+
+    model_type = MODEL_CACHE.get('model_type')
+    beta = MODEL_CACHE.get('beta')
+    intercept = MODEL_CACHE.get('intercept')
+    p_value = MODEL_CACHE.get('adf_pvalue')
+
+    if model_type is None or beta is None or intercept is None:
         return np.nan, np.nan, np.nan, np.nan, np.nan
 
-    # spread calc
-    spread_series = y_series - (intercept + slope * x_series)
+    logA = data['Log_A']
+    logB = data['Log_B']
 
-    # z calc
-    mean = spread_series.mean()
-    std = spread_series.std()  # spread volatility
+
+    if model_type == 'A_on_B':
+        spread_series = logA - (intercept + beta * logB)
+    else:
+        spread_series = logB - (intercept + beta * logA)
+
+    # gonna compute z-score on a separate (shorter) window to capture recent deviation but not too noisy
+    z_win = min(Z_WINDOW, len(spread_series))
+    spread_tail = spread_series.iloc[-z_win:]
+
+    mean = spread_tail.mean()
+    std = spread_tail.std()
+
     latest_spread = spread_series.iloc[-1]
+    z_score = (latest_spread - mean) / std if std > 0 else np.nan
 
-    z_score = (latest_spread - mean) / std if std != 0 and not np.isnan(std) else np.nan
 
-    # adf calc
-    try:
-        # i dont actually understand the augmented test math itself but if i can import it then whateves
-        adf_result = adfuller(spread_series.dropna(), autolag='AIC')
-        p_value = adf_result[1]
-    except Exception:
-        p_value = np.nan
-
-    return slope, z_score, std, latest_spread, p_value
-
+    return beta, z_score, std, latest_spread, p_value
 
 def get_price(asset_a, asset_b):
     symbols = [asset_a, asset_b]
@@ -334,8 +423,13 @@ def getCurrentPos(asset_a, asset_b):
 
         return 0, 0, 0
 
+    except Exception as e:
+        print(f"Error checking position: {e}")
+        return 0, 0, 0
+
 
 def print_pnl_stats():
+    """this function is for getting the equity stats"""
     equity = np.nan
     pnl_today = np.nan
     try:
@@ -349,11 +443,15 @@ def print_pnl_stats():
         except AttributeError:
             pnl_today = np.nan  # use nan if the attribute is missing
 
-        print("\n pnl report:")
-        print(f"Current Equity: ${equity:,.2f}")
-        print(f"PnL for Today (Approx): ${pnl_today:,.2f}")
+        print("\n📈📊 **--- TRADE CLOSED: PNL REPORT ---** 📊📈")
+        print(f"💰 Account Equity: ${equity:,.2f}")
+        print(f"🔥 PnL for Today (Approximation): ${pnl_today:,.2f}")
         print("------------------------------------------")
 
+        return equity, pnl_today
+
+    except Exception as e:
+        print(f"⚠️ Warning: Could not fetch PnL stats from Alpaca: {e}")
         return equity, pnl_today
 
 
@@ -389,7 +487,6 @@ def determine_sizing(asset_a_price, asset_b_price, beta, spread_volatility):
     actual_V_B = qty_b * asset_b_price
 
     return raw_shares_a, raw_shares_b, qty_a, qty_b, actual_V_A, actual_V_B
-
 
 
 def submit_order(symbol, qty, side, wait_interval=1, max_wait_seconds=15):
@@ -445,7 +542,6 @@ def submit_order(symbol, qty, side, wait_interval=1, max_wait_seconds=15):
             f"Order submission failed for {symbol} ({side.value}): {e}", alert_type="ERROR"
         )
         return False, 0.0
-
 
 
 def liquidate(reason="No reason provided."):
@@ -506,7 +602,6 @@ def liquidate(reason="No reason provided."):
     except Exception as e:
         print(f"Liquidation error: {e}")
         send_tele(f"Liquidation failed for {ASSET_A}/{ASSET_B}: {e}", alert_type="ERROR")
-
 
 
 def log_status(current_z, beta, p_value, price_a, price_b, position, pos_a, pos_b, acc_eqty,
@@ -757,7 +852,79 @@ def debug_submit_orders():
     else:
         print("Quantity too small, skipping order to avoid fractional shares.")
 
+def debug_model():
+    print("\n===== DEBUG MODEL / SPREAD / Z-SCORE =====")
+
+    # 0. Load optimized parameters first
+    print("Loading parameters...")
+    if not load_param():
+        print("❌ Could not load parameters. Exiting debug.")
+        return
+
+    # Safety fallback
+    global LOOKBACK_WINDOW
+    if LOOKBACK_WINDOW is None:
+        print("⚠ LOOKBACK_WINDOW was None. Using fallback = 5000.")
+        LOOKBACK_WINDOW = 5000
+
+    # 1. Load data
+    print("\nFetching lookback data...")
+    data = filters_data(ASSET_A, ASSET_B, LOOKBACK_WINDOW)
+    if data is None or len(data) == 0:
+        print("❌ No data loaded. Exiting debug.")
+        return
+
+    print(f"Loaded {len(data)} rows of RTH minute data.")
+
+    # 2. Test spread direction
+    print("\n>>> Testing spread direction detection...")
+    best = choose_best_spread(data)
+    if best is None:
+        print("❌ Spread test failed.")
+        return
+
+    model_type, beta, intercept, spread_series, adf_p, variance = best
+    print(f"✓ Best Model: {model_type}")
+    print(f"    Beta: {beta:.6f}")
+    print(f"    Intercept: {intercept:.6f}")
+    print(f"    ADF p-value: {adf_p:.6f}")
+    print(f"    Spread Variance: {variance:.6e}")
+
+    # 3. Test static model cache update
+    print("\n>>> Testing static model cache update...")
+    compute_static_model(data)
+    print("MODEL_CACHE CONTENTS:")
+    for k, v in MODEL_CACHE.items():
+        print(f"   {k}: {v}")
+
+    # 4. Test signal stability
+    print("\n>>> Testing calculateSignal() ...")
+    beta2, z2, std2, latest_spread2, pv2 = calculateSignal(data)
+    print(f"    Z-score = {z2:.6f}")
+    print(f"    spread std = {std2:.6f}")
+    print(f"    beta used = {beta2}")
+    print(f"    p-value = {pv2}")
+
+    # 5. Simulate Z-score movement
+    print("\n>>> Z-score movement over last 150 bars:")
+    tail = data.iloc[-150:]
+    zs = []
+    for i in range(50, 150):
+        temp = tail.iloc[:i]
+        _, ztemp, _, _, _ = calculateSignal(temp)
+        zs.append(ztemp)
+
+    for i, z in enumerate(zs[-20:], 1):
+        print(f"   step {i:02d}: Z={z:.4f}")
+
+    print("\n===== DEBUG DONE =====")
+
+
 
 if __name__ == "__main__":
     liveLoop()
+    # debug_model()
     # debug_submit_orders() #comment out when not debugging
+
+
+
