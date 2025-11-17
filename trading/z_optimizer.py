@@ -11,8 +11,8 @@ from numba import njit
 from typing import Tuple, List, Dict, Any
 
 # ===== CONFIG =====
-API_KEY_ID = "PKK3GDAW3MSQ63FO4G7G4BSJ2Q"
-API_SECRET_KEY = "ATJ8ersf2wzTNwy4t71nKMCSfAEaPwJTpcy2S9DfEq4e"
+API_KEY_ID = "xxx"
+API_SECRET_KEY = "xxx"
 
 timeInterval = "1m"
 CAPITAL = 10000
@@ -21,18 +21,7 @@ slippage = 0.01
 optimizeFor = "sharpe"  # "sharpe" or "calmar"
 lookback_days = 50 
 PAIRS_CONFIG = [
-    {"A": "UDR", "B": "AVB"},
-    {"A": "GOOG", "B": "GOOGL"},
-    {"A": "ORCL", "B": "IBM"},
-    {"A": "SLB", "B": "HAL"},
-    {"A": "BND", "B": "AGG"},
-    {"A": "DVN", "B": "OXY"},
-    {"A": "PAA", "B": "PAGP"},
-    {"A": "GLD", "B": "OUNZ"},
-    {"A": "SPHY", "B": "USHY"},
-    {"A": "MET", "B": "PRU"},
-    {"A": "CMS", "B": "DUK"},
-    {"A": "UAA", "B": "UA"},
+    {"A": "xxx", "B": "yyy"},
 ]
 
 def get_time(timeInterval: str) -> TimeFrame:
