@@ -10,7 +10,6 @@ from alpaca.data import TimeFrameUnit
 from numba import njit
 from typing import Tuple, List, Dict, Any
 
-# ===== CONFIG =====
 API_KEY_ID = "xxx"
 API_SECRET_KEY = "xxx"
 
@@ -170,7 +169,7 @@ def run_opt(data: pd.DataFrame, asset_a: str, asset_b: str) -> Dict[str, Any]:
 
 def main():
     tf = get_time(timeInterval)
-    end_date = end_date = datetime.datetime.now(pytz.utc) - timedelta(days=1) #i cant use the most recent data due to alpaca SIP rules so..
+    end_date = end_date = datetime.datetime.now(pytz.utc) - timedelta(days=1) #i cant use the most recent data due to alpaca SIP not being avail (today)
     start_date = end_date - timedelta(days=lookback_days)
     all_results = []
 
