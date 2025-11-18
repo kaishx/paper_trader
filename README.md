@@ -16,5 +16,5 @@
 
 ---
 
-> **Note:** Code was written by me with assistance from AI. All mathematical logic has been manually reviewed and verified. This project is a proof of concept and may still contain bugs and heuristic parameter choices.
+> **Note:** Code was written by me with assistance from AI. All mathematical logic has been manually reviewed and verified. This project is a proof of concept and DEFINITELY CONTAINS bugs and heuristic parameter choices.
 
