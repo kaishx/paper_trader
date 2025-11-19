@@ -4,7 +4,7 @@
 
 **Paper-Trader Code**: Interacts with the Alpaca API to simulate live mean-reversion trading.
 
-**Multi-Agent Controller**: Manages ~5–6 paper-traders concurrently.
+**Multi-Agent Controller**: Manages ~5 - 6 paper-traders concurrently.
 
 **Utilities**: Additional scripts and tools to support trading and analysis.
 
