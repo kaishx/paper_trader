@@ -1,4 +1,4 @@
-# Paper Trading Algorithm
+# Pairs Trading Paper Trading Algorithm
 
 ## This repository contains:
 
