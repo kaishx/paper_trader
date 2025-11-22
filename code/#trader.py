@@ -24,11 +24,11 @@ from alpaca.trading.requests import LimitOrderRequest
 print = lambda *args, **kwargs: builtins.print(*args, **kwargs, flush=True)
 
 # api
-API_KEY_ID = "PKCHRDERPHH52D5RJN3UNEYKBU"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-API_SECRET_KEY = "EFWXvL7vkmnSzSLVUpfqDB9tBrgfNms7PWdjrwn7rQ3c"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_KEY_ID = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_SECRET_KEY = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
-bot_token = "8575237777:AAHDxDYRu-m_bpb9vb2lfCpIDETXpBEdUtU"  #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-chat_id = "-1003289508299"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+bot_token = "XXX"  #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+chat_id = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
 paper_setting = True
 adf_max = 0.10  # UP: more looser, DOWN: more tight. noticed from WFA that 0.05 is kinda tight after the kalman update
