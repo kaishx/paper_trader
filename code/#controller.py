@@ -5,11 +5,7 @@ import threading
 
 # TMEPLATE : ("XXX", "YYY")
 pairs = [
-    ("AMZN", "BABA"),
-    ("WBS", "FULT"),
-    ("FLS", "FAST"),
-    ("SLB", "HAL"),
-    ("ORCL", "IBM"),
+    ("XXX", "YYY"),
 ]
 
 traderScript = "#trader.py"  # make sure the name is correct
