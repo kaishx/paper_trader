@@ -2,11 +2,11 @@
 
 ## This repository contains:
 
-**Paper-Trader Code**: Interacts with the Alpaca API to simulate live mean-reversion trading.
+**Paper-Trader Code**: Interacts with the Alpaca API to simulate the trading while calculating the kalman beta and other metrics.
 
-**Multi-Agent Controller**: Manages ~5 - 6 paper-traders concurrently.
+**Multi-Agent Controller**: Manages the paper-traders concurrently (seeking to run about 20-25 traders)
 
-**Utilities**: Additional scripts and tools to support trading and analysis.
+**Optimizer**: To optimize the entry parameters for "today's" trading session.
 
 ---
 
@@ -16,5 +16,5 @@
 
 ---
 
-> **Note:** Code was written by me with assistance from AI. All mathematical logic has been manually reviewed and verified. This project is a proof of concept and DEFINITELY CONTAINS bugs and heuristic parameter choices.
+> **Note:** Code was written by me with assistance from AI and Online Forums. All mathematical logic has been manually reviewed. This project is a proof of concept and DEFINITELY CONTAINS bugs, mistakes and heuristic parameter choices.
 
