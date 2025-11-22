@@ -26,16 +26,7 @@ rolling_window = 100
 hurst_max = 0.6
 
 PAIRS_CONFIG = [
-    {"A": "MRVL", "B": "QCOM"},
-    {"A": "MSFT", "B": "AAPL"},
-    {"A": "ALL", "B": "TRV"},
-    {"A": "NOC", "B": "GD"},
-    {"A": "ADBE", "B": "INTU"},
-    {"A": "AMZN", "B": "BABA"},
-    {"A": "WBS", "B": "FULT"},
-    {"A": "FLS", "B": "FAST"},
-    {"A": "SLB", "B": "HAL"},
-    {"A": "ORCL", "B": "IBM"},
+    {"A": "XXX", "B": "YYY"},
 ]
 
 
