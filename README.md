@@ -2,6 +2,8 @@
 
 ## This repository contains:
 
+![Architecture](assets/Design.png)
+
 **Paper-Trader Code**: Interacts with the Alpaca API to simulate the trading while calculating the kalman beta and other metrics.
 
 **Multi-Agent Controller**: Manages the paper-traders concurrently (seeking to run about 20-25 traders)
