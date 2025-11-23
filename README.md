@@ -23,5 +23,5 @@ Below is the architecture of the whole system
 
 ---
 
-> **Note:** Code was written by me with assistance from AI and Online Forums. All mathematical logic has been manually reviewed. This project is a proof of concept and DEFINITELY CONTAINS bugs, mistakes and heuristic parameter choices.
+> **Note:** All mathematical logic has been manually reviewed. This project is a proof of concept and DEFINITELY CONTAINS bugs, mistakes and heuristic parameter choices.
 
