@@ -2,9 +2,12 @@
 
 This is a pairs trading algorithm utilizing Kalman Filters and Hurst Exponents to trade mean-reverting pairs.
 
-## This repository contains the code for:
+Below is the architecture of the whole system
 
 ![System Architecture](assets/Design.png)
+
+## This repository contains the code for:
+
 
 **Controller**: Manages the paper-traders concurrently (seeking to run about 20-25 traders)
 
