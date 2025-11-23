@@ -1,12 +1,12 @@
 # Pairs Trading Paper Trading Algorithm
 
-## This repository contains:
+## This repository contains the code for:
 
-![Architecture](assets/Design.png)
-
-**Paper-Trader Code**: Interacts with the Alpaca API to simulate the trading while calculating the kalman beta and other metrics.
+![System Architecture](assets/Design.png)
 
 **Multi-Agent Controller**: Manages the paper-traders concurrently (seeking to run about 20-25 traders)
+
+**Paper-Trader**: Interacts with the Alpaca API to simulate the trading while calculating the kalman beta and other metrics.
 
 **Optimizer**: To optimize the entry parameters for "today's" trading session.
 
