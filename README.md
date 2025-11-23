@@ -2,7 +2,7 @@
 
 This is a pairs trading algorithm utilizing Kalman Filters and Hurst Exponents to trade mean-reverting pairs.
 
-Below is the architecture of the whole system
+Below is the architecture of the whole system:
 
 ![System Architecture](assets/Design.png)
 
