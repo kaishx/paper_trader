@@ -1,14 +1,16 @@
 # Pairs Trading Paper Trading Algorithm
 
+This is a pairs trading algorithm utilizing Kalman Filters and Hurst Exponents to trade mean-reverting pairs.
+
 ## This repository contains the code for:
 
 ![System Architecture](assets/Design.png)
 
-**Multi-Agent Controller**: Manages the paper-traders concurrently (seeking to run about 20-25 traders)
+**Controller**: Manages the paper-traders concurrently (seeking to run about 20-25 traders)
 
-**Paper-Trader**: Interacts with the Alpaca API to simulate the trading while calculating the kalman beta and other metrics.
+**Trader**: Interacts with the Alpaca API to simulate the trading while calculating the kalman beta and other metrics.
 
-**Optimizer**: To optimize the entry parameters for "today's" trading session.
+**Optimizer**: Backtests recent data to calibrate optimal Z-score entry/exit thresholds for the current trading session.
 
 ---
 
