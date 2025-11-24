@@ -5,11 +5,7 @@ import threading
 
 # TMEPLATE : ("XXX", "YYY")
 pairs = [
-    ("AMZN", "BABA"),
-    ("WBS", "FULT"),
-    ("FLS", "FAST"),
-    ("SLB", "HAL"),
-    ("ORCL", "IBM"),
+    ("XXX", "YYY"),
 ]
 
 traderScript = "#trader.py"  # make sure the name is correct
@@ -54,3 +50,4 @@ if __name__ == "__main__":
         print("KeyboardInterrupt detected. Terminating all traders...")
         for proc, _, _ in procs:
             proc.terminate()
+
