@@ -12,13 +12,12 @@ from numba import jit, njit, float64
 from statsmodels.tsa.stattools import adfuller
 import statsmodels.api as sm
 
-API_KEY_ID = "PKCHRDERPHH52D5RJN3UNEYKBU"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-API_SECRET_KEY = "EFWXvL7vkmnSzSLVUpfqDB9tBrgfNms7PWdjrwn7rQ3c"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_KEY_ID = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_SECRET_KEY = "YYY"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
 # pair ; RMBER the format here is different from the wfa side ["XXX", "YYY"]
 PAIRS_TO_OPTIMIZE = [
-    ["ICLR", "IQV"],
-    ["PZZA", "DPZ"],
+    ["XXX", "YYY"],
 ]
 
 cptl = 10000.0
@@ -277,5 +276,6 @@ if __name__ == "__main__":
 #
     with open(PARAMS_FILE, 'w') as f:
         json.dump(final_params, f, indent=4)
+
 
     print(f"\nSaved optimized parameters to {PARAMS_FILE}")
