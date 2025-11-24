@@ -1,67 +1,42 @@
-import datetime
-import pytz
+import os
 import json
-import numpy as np
+import time
+import itertools
 import pandas as pd
-from datetime import timedelta
-from alpaca.data.requests import StockBarsRequest, TimeFrame
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data import TimeFrameUnit
-from numba import njit
-from typing import Dict, Any
+import numpy as np
+from datetime import datetime, timedelta
+from alpaca.data import StockHistoricalDataClient, TimeFrame, TimeFrameUnit
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.enums import DataFeed
+from numba import jit, njit, float64
+from statsmodels.tsa.stattools import adfuller
+import statsmodels.api as sm
 
-API_KEY_ID = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-API_SECRET_KEY = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_KEY_ID = "PKCHRDERPHH52D5RJN3UNEYKBU"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_SECRET_KEY = "EFWXvL7vkmnSzSLVUpfqDB9tBrgfNms7PWdjrwn7rQ3c"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
-# params
-timeInterval = "15m"
-cptl = 10000
-tx_fee = 0.0005
-slippage = 0.01
-optimizeFor = "sharpe"
-
-# data fetching config
-lookback_days = 250
-rolling_window = 100
-hurst_max = 0.6
-
-PAIRS_CONFIG = [
-    {"A": "XXX", "B": "YYY"},
+# pair ; RMBER the format here is different from the wfa side ["XXX", "YYY"]
+PAIRS_TO_OPTIMIZE = [
+    ["ICLR", "IQV"],
+    ["PZZA", "DPZ"],
 ]
 
+cptl = 10000.0
+txfee = 0.0001 #THIS IS NOT IN PERCENT BTW. SO THIS NUMBER * 100 = percentage
+slippagefee = 0.01
 
-def get_time(timeInterval: str) -> TimeFrame:
-    unit_map = {"m": TimeFrameUnit.Minute, "h": TimeFrameUnit.Hour, "d": TimeFrameUnit.Day}
-    unit = unit_map.get(timeInterval[-1].lower())
-    if not unit:
-        raise ValueError("invald time unit")
-    return TimeFrame(int(timeInterval[:-1]), unit)
+# not using ADF here as i wnt this to be an optimizer regardless of regime during this "IS". letting the trader decide if the pair is good enough to trade in real time.
+hurstMax = 0.80
 
+Z_ENTRY_GRID = [1.1, 1.3, 1.5, 1.7, 1.9, 2.1, 2.3, 2.5, 2.7, 2.9, 3.1]
+Z_EXIT_GRID = [0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5]
+Z_STOP_LOSS_GRID = [3.3, 3.6, 3.9, 4.2, 4.5, 4.8]
 
-def get_data(asset_a: str, asset_b: str, start_date: datetime.datetime, end_date: datetime.datetime,
-             tf: TimeFrame) -> pd.DataFrame:
-    client = StockHistoricalDataClient(API_KEY_ID, API_SECRET_KEY)
-    print(f"grabbing data for {asset_a}/{asset_b}...")
+LOOKBACK_DAYS = 365
+START_DATE = datetime.now() - timedelta(days=LOOKBACK_DAYS)
+END_DATE = datetime.now() - timedelta(days=1)
 
-    request = StockBarsRequest(symbol_or_symbols=[asset_a, asset_b], timeframe=tf, start=start_date, end=end_date)
-    try:
-        bars = client.get_stock_bars(request).df
-        if bars.empty:
-            return pd.DataFrame()
-
-        data_a = bars.loc[asset_a]['close'].rename('Close_A')
-        data_b = bars.loc[asset_b]['close'].rename('Close_B')
-        return pd.DataFrame({"Close_A": data_a, "Close_B": data_b}).dropna()
-    except Exception as e:
-        print(f"alpaca api choked: {e}")
-        return pd.DataFrame()
-
-
-def prep_data(data: pd.DataFrame) -> pd.DataFrame:
-    epsilon = 1e-10
-    data['Log_A'] = np.log(data['Close_A'].clip(lower=epsilon))
-    data['Log_B'] = np.log(data['Close_B'].clip(lower=epsilon))
-    return data
+PARAMS_FILE = "optimized_params.json"
 
 @njit
 def calculate_kalman_beta(y, x, delta=1e-4, ve=1e-3):
@@ -81,15 +56,14 @@ def calculate_kalman_beta(y, x, delta=1e-4, ve=1e-3):
         state_mean = state_mean + kalman_gain * residual
         state_cov = (1 - kalman_gain * obs_mat) * state_cov
         beta[t] = state_mean
-
     return beta
+
 
 @njit
 def calculate_rolling_hurst(series, window=100):
     n = len(series)
     hurst = np.full(n, 0.5)
     min_window = max(window, 30)
-
     for t in range(min_window, n):
         ts = series[t - window:t]
         mean_ts = np.mean(ts)
@@ -101,221 +75,207 @@ def calculate_rolling_hurst(series, window=100):
             hurst[t] = 0.5
         else:
             hurst[t] = np.log(R / S) / np.log(len(ts))
-
     return hurst
 
 
-def main_calc(data: pd.DataFrame, window: int) -> pd.DataFrame:
+def calculate_spread_and_zscore(data, lookback=78):
     Y = data['Log_A'].values
     X = data['Log_B'].values
 
     data['Beta'] = calculate_kalman_beta(Y, X)
 
-    data['Spread'] = data['Log_A'] - data['Beta'] * data['Log_B']
+    rolling_mean_Y = data['Log_A'].rolling(window=lookback).mean()
+    rolling_mean_X = data['Log_B'].rolling(window=lookback).mean()
+    data['Alpha'] = rolling_mean_Y - data['Beta'] * rolling_mean_X
 
-    data['Hurst'] = calculate_rolling_hurst(data['Spread'].values, window=100)
+    data['Spread'] = data['Log_A'] - (data['Alpha'] + data['Beta'] * data['Log_B'])
 
-    spread_mean = data['Spread'].rolling(window=window).mean()
-    spread_std = data['Spread'].rolling(window=window).std()
+    rolling_mean_spread = data['Spread'].rolling(window=lookback).mean()
+    rolling_std_spread = data['Spread'].rolling(window=lookback).std()
+    data['Z_Score'] = (data['Spread'] - rolling_mean_spread) / (rolling_std_spread + 1e-9)
 
-    data['Z_Score'] = (data['Spread'] - spread_mean) / spread_std
+    hurst_win = 100
+    data['Hurst'] = calculate_rolling_hurst(data['Spread'].values, window=hurst_win)
 
-    return data.dropna()
-
-
-@njit(cache=True)
-def numba_strat(z_scores, betas, close_a, close_b, hurst, z_entry, z_exit, z_stop_loss, hurst_max,
-                cptl, tx_fee, slippage):
-    cash = cptl
-    shares_a = 0.0
-    shares_b = 0.0
-    in_trade = False
-
-    equity_curve = np.zeros(len(z_scores))
-    equity_curve[0] = cptl
-
-    # 0 = none, 1 = long spread, -1 = short spread
-    trade_dir = 0
-
-    for i in range(1, len(z_scores)):
-        z = z_scores[i]
-        h = hurst[i]
-        beta = betas[i]
-        price_a = close_a[i]
-        price_b = close_b[i]
-
-        current_equity = cash + (shares_a * price_a) + (shares_b * price_b)
-
-        if in_trade:
-            should_exit = False
-
-            if z >= z_stop_loss or z <= -z_stop_loss:
-                should_exit = True
-
-            if trade_dir == 1 and z >= -z_exit:
-                should_exit = True
-            elif trade_dir == -1 and z <= z_exit:
-                should_exit = True
-
-            if should_exit:
-                proceeds_a = -(shares_a * price_a)
-                cost_a = abs(shares_a * price_a) * tx_fee
-
-                proceeds_b = -(shares_b * price_b)
-                cost_b = abs(shares_b * price_b) * tx_fee
-
-                cash += (proceeds_a - cost_a) + (proceeds_b - cost_b)
-
-                shares_a = 0.0
-                shares_b = 0.0
-                in_trade = False
-                trade_dir = 0
-
-        if not in_trade:
-            if abs(z) >= z_entry and h < hurst_max:
-
-                cptl_per_leg = current_equity / 2.0
-
-                if z <= -z_entry:
-                    qty_a = int(cptl_per_leg / price_a)
-                    qty_b = int((cptl_per_leg / price_b) / beta)
-
-                    shares_a = qty_a
-                    cash -= (qty_a * price_a) * (1 + tx_fee)
-
-                    shares_b = -qty_b
-                    cash += (qty_b * price_b) * (1 - tx_fee)
-
-                    in_trade = True
-                    trade_dir = 1
-
-                elif z >= z_entry:
-                    # Short Spread logic
-                    qty_a = int(cptl_per_leg / price_a)
-                    qty_b = int((cptl_per_leg / price_b) / beta)
-
-                    shares_a = -qty_a
-                    cash += (qty_a * price_a) * (1 - tx_fee)
-
-                    shares_b = qty_b
-                    cash -= (qty_b * price_b) * (1 + tx_fee)
-
-                    in_trade = True
-                    trade_dir = -1
-
-        equity_curve[i] = cash + (shares_a * price_a) + (shares_b * price_b)
-
-    return equity_curve
+    data.dropna(subset=['Beta', 'Alpha', 'Z_Score', 'Hurst'], inplace=True)
+    return data
 
 
-def backtest(data: pd.DataFrame, z_entry, z_exit, z_stop_loss):
-    z_scores = data['Z_Score'].values
-    betas = data['Beta'].values
-    close_a = data['Close_A'].values
-    close_b = data['Close_B'].values
-    hurst = data['Hurst'].values
+def check_cointegration_adf(data):
+    # KEEPING this for legacy, due to my revised nature of howim gonna use ADF
+    spread = data['Spread'].values
+    spread = spread[~np.isnan(spread)]
 
-    equity_curve = numba_strat(
-        z_scores, betas, close_a, close_b, hurst,
-        z_entry, z_exit, z_stop_loss, hurst_max,
-        cptl, tx_fee, slippage
+    if len(spread) < 30:
+        return 1.0
+
+    adf_result = adfuller(spread)
+    p_value = adf_result[1]
+    return p_value
+
+@njit
+def numba_backtest_core(close_a, close_b, z_score, hurst, z_entry, z_exit, z_stop_loss, cptl, tx_fee, slippage,
+                        hurst_thresh):
+    n_bars = len(close_a)
+    pnl_array = np.zeros(n_bars, dtype=np.float64)
+    position = 0.0
+    entry_price_a = 0.0
+    entry_price_b = 0.0
+    n_A = 0.0
+    n_B = 0.0
+
+    for i in range(n_bars - 1):
+        current_z = z_score[i]
+        current_hurst = hurst[i]
+        prev_position = position
+        next_price_a = close_a[i + 1]
+        next_price_b = close_b[i + 1]
+
+        is_final_bar = (i == n_bars - 2)
+
+        if prev_position != 0:
+            is_mean_reversion = np.abs(current_z) <= z_exit
+            is_stop_loss = np.abs(current_z) >= z_stop_loss
+
+            if is_mean_reversion or is_stop_loss or is_final_bar:
+                if prev_position == 1: 
+                    pnl_a = (next_price_a - entry_price_a) * n_A
+                    pnl_b = (entry_price_b - next_price_b) * n_B
+                else:
+                    pnl_a = (entry_price_a - next_price_a) * n_A
+                    pnl_b = (next_price_b - entry_price_b) * n_B
+
+                gross_pnl = pnl_a + pnl_b
+
+                entry_val = entry_price_a * n_A + entry_price_b * n_B
+                exit_val = next_price_a * n_A + next_price_b * n_B
+                cost_fee = tx_fee * (entry_val + exit_val)
+                cost_slip = slippage * (n_A + n_B) * 2.0
+
+                pnl_array[i + 1] = gross_pnl - (cost_fee + cost_slip)
+                position = 0.0
+
+        elif prev_position == 0 and not is_final_bar:
+            if np.abs(current_z) >= z_entry and current_hurst < hurst_thresh:
+                # Simple 50/50 cptl split for optimization speed
+                # traer uses beta-weighted, but this is close enough for param finding
+                n_A = (cptl / 2) / next_price_a
+                n_B = (cptl / 2) / next_price_b
+
+                entry_price_a = next_price_a
+                entry_price_b = next_price_b
+
+                if current_z < -z_entry:
+                    position = 1.0
+                else:
+                    position = -1.0
+
+    return pnl_array
+
+def prepare_data(client, symbol_a, symbol_b):
+    print(f"Fetching 1 Year Data ({START_DATE.strftime('%Y-%m-%d')}) for {symbol_a}/{symbol_b}...")
+    req = StockBarsRequest(
+        symbol_or_symbols=[symbol_a, symbol_b],
+        timeframe=TimeFrame(15, TimeFrameUnit.Minute),
+        start=START_DATE,
+        end=END_DATE,
+        feed=DataFeed.SIP
     )
+    try:
+        bars = client.get_stock_bars(req).df
+        df_a = bars.loc[symbol_a]['close'].rename(f'Close_{symbol_a}')
+        df_b = bars.loc[symbol_b]['close'].rename(f'Close_{symbol_b}')
 
-    returns = pd.Series(equity_curve).pct_change().fillna(0)
+        df = pd.concat([df_a, df_b], axis=1, join='inner')
+        df['Log_A'] = np.log(df[f'Close_{symbol_a}'])
+        df['Log_B'] = np.log(df[f'Close_{symbol_b}'])
 
-    if returns.std() == 0:
-        sharpe = -np.inf
-    else:
-        # 15m bars -> 26 bars per day * 252 days
-        sharpe = returns.mean() / returns.std() * np.sqrt(252 * 26)
+        return df
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return pd.DataFrame()
 
-    total_return = equity_curve[-1] / equity_curve[0] - 1
-    max_drawdown = 1 - np.min(equity_curve) / np.max(np.maximum.accumulate(equity_curve))
-    calmar = total_return / max(1e-6, max_drawdown)
+def find_best_params(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
+    df = calculate_spread_and_zscore(df)
 
-    return sharpe, calmar
+    current_p_value = check_cointegration_adf(df)
+    print(f"Current ADF p-value: {current_p_value:.4f} (Recorded, not filtered)")
 
+    opt_start_idx = max(0, len(df) - int(120 * 26))
+    opt_df = df.iloc[opt_start_idx:].copy()
 
-def run_opt(data: pd.DataFrame, asset_a: str, asset_b: str) -> Dict[str, Any]:
-    Z_entry_range = np.arange(1.0, 3.0, 0.25)
-    Z_exit_range = np.arange(0.0, 0.8, 0.2)
-    Z_stop_loss_range = np.arange(3.0, 5.0, 0.5)
+    if len(opt_df) < 100:
+        print("Not enough recent data to optimize.")
+        return None
 
-    best_metric = -np.inf
-    z_entry_opt = z_exit_opt = z_stop_loss_opt = 0.0
+    close_a = opt_df[f'Close_{symbol_a}'].values
+    close_b = opt_df[f'Close_{symbol_b}'].values
+    z_score = opt_df['Z_Score'].values
+    hurst = opt_df['Hurst'].values
 
-    for z_entry in Z_entry_range:
-        for z_exit in Z_exit_range:
-            if z_exit >= z_entry: continue
+    best_sharpe = -999.0
+    best_params = (2.1, 0.1, 3.3)  # default backup
 
-            for z_stop_loss in Z_stop_loss_range:
-                if z_stop_loss <= z_entry: continue
+    param_combinations = list(itertools.product(Z_ENTRY_GRID, Z_EXIT_GRID, Z_STOP_LOSS_GRID))
 
-                sharpe, calmar = backtest(data, z_entry, z_exit, z_stop_loss)
-                metric = calmar if optimizeFor == "calmar" else sharpe
+    for z_entry, z_exit, z_sl in param_combinations:
+        if not (z_exit < z_entry < z_sl):
+            continue
 
-                if metric > best_metric:
-                    best_metric = metric
-                    z_entry_opt, z_exit_opt, z_stop_loss_opt = z_entry, z_exit, z_stop_loss
+        pnl = numba_backtest_core(close_a, close_b, z_score, hurst, z_entry, z_exit, z_sl,
+                                  cptl, tx_fee, slippage, hurstMax)
+
+        total_pnl = np.sum(pnl)
+        if total_pnl == 0:
+            sharpe = 0.0
+        else:
+            returns = pnl[pnl != 0] / cptl
+            if len(returns) > 1:
+                sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(len(returns))  # rough estimate
+            else:
+                sharpe = 0.0
+
+        if sharpe > best_sharpe:
+            best_sharpe = sharpe
+            best_params = (z_entry, z_exit, z_sl)
 
     return {
-        "asset_a": asset_a,
-        "asset_b": asset_b,
-        "optimal_z_entry": round(z_entry_opt, 2),
-        "optimal_z_exit": round(z_exit_opt, 2),
-        "optimal_z_stop_loss": round(z_stop_loss_opt, 2),
-        f"in_sample_{optimizeFor}": round(best_metric, 4),
-        "metadata": {"rolling_window": rolling_window},
-        "status": "OPTIMIZED"
+        "z_entry": best_params[0],
+        "z_exit": best_params[1],
+        "z_sl": best_params[2],
+        "sharpe": best_sharpe,
+        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "adf_p_value": current_p_value
     }
-
-
-def main():
-    tf = get_time(timeInterval)
-    end_date = datetime.datetime.now(pytz.utc) - timedelta(days=1)
-    start_date = end_date - timedelta(days=lookback_days)
-
-    all_results = []
-
-    print(f"Starting Opt (Lookback: {lookback_days} days, Window: {rolling_window} bars, TF: {timeInterval})...")
-
-    for pair in PAIRS_CONFIG:
-        asset_a, asset_b = pair["A"], pair["B"]
-
-        raw_data = get_data(asset_a, asset_b, start_date, end_date, tf)
-
-        if raw_data.empty or len(raw_data) < rolling_window + 50:
-            print(f"Skipping {asset_a}/{asset_b}: Not enough rows.")
-            all_results.append({"asset_a": asset_a, "asset_b": asset_b, "status": "INSUFFICIENT_DATA"})
-            continue
-
-        processed = prep_data(raw_data)
-        processed = main_calc(processed, rolling_window)
-
-        if processed.empty:
-            print(f"Skipping {asset_a}/{asset_b}: Data evaporated after rolling window.")
-            continue
-
-        result = run_opt(processed, asset_a, asset_b)
-        print(
-            f" -> {asset_a}/{asset_b}: Z-Entry {result['optimal_z_entry']} | Sharpe: {result.get(f'in_sample_{optimizeFor}', 0)}")
-        all_results.append(result)
-
-    final_output = {
-        "metadata": {
-            "timestamp": datetime.datetime.now(pytz.utc).isoformat(),
-            "timeframe": timeInterval,
-            "optimization_lookback_days": lookback_days,
-            "rolling_window_bars": rolling_window
-        },
-        "optimization_results": all_results
-    }
-
-    with open("optimized_params.json", "w") as f:
-        json.dump(final_output, f, indent=4)
-
-    print("\nDone. params saved to optimized_params.json")
-
 
 if __name__ == "__main__":
-    main()
+    client = StockHistoricalDataClient(API_KEY_ID, API_SECRET_KEY)
+
+    if os.path.exists(PARAMS_FILE):
+        with open(PARAMS_FILE, 'r') as f:
+            final_params = json.load(f)
+    else:
+        final_params = {}
+
+    for pair in PAIRS_TO_OPTIMIZE:
+        sym_a, sym_b = pair
+        pair_key = f"{sym_a}/{sym_b}"
+
+        print(f"\nOptimizing {pair_key}...")
+
+        df = prepare_data(client, sym_a, sym_b)
+        if df.empty: continue
+
+        result = find_best_params(sym_a, sym_b, df, cptl, txfee, slippagefee)
+
+        if result:
+            final_params[pair_key] = result
+            print(f"      New Params: Entry {result['z_entry']} | Exit {result['z_exit']} | SL {result['z_sl']}")
+            print(f"      Stats: Sharpe {result['sharpe']:.2f} | ADF {result['adf_p_value']:.3f}")
+        else:
+            print("     Optimization failed.")
+#
+    with open(PARAMS_FILE, 'w') as f:
+        json.dump(final_params, f, indent=4)
+
+    print(f"\nSaved optimized parameters to {PARAMS_FILE}")

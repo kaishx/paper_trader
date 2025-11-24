@@ -5,7 +5,11 @@ import threading
 
 # TMEPLATE : ("XXX", "YYY")
 pairs = [
-    ("XXX", "YYY"),
+    ("AMZN", "BABA"),
+    ("WBS", "FULT"),
+    ("FLS", "FAST"),
+    ("SLB", "HAL"),
+    ("ORCL", "IBM"),
 ]
 
 traderScript = "#trader.py"  # make sure the name is correct
@@ -27,7 +31,7 @@ def start(pairs_list):
             stderr=subprocess.PIPE,
             bufsize=1,
             text=True,
-            encoding="utf-8",  # explicitly force utf8 
+            encoding="utf-8",  # explicitly force utf8
             errors="replace"  # prevnt crashes on some characters so the thing keeps running properly
         )
         processes.append((proc, asset_a, asset_b))

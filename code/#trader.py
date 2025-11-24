@@ -24,15 +24,15 @@ from alpaca.trading.requests import LimitOrderRequest
 print = lambda *args, **kwargs: builtins.print(*args, **kwargs, flush=True)
 
 # api
-API_KEY_ID = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-API_SECRET_KEY = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_KEY_ID = "PKCHRDERPHH52D5RJN3UNEYKBU"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_SECRET_KEY = "EFWXvL7vkmnSzSLVUpfqDB9tBrgfNms7PWdjrwn7rQ3c"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
-bot_token = "XXX"  #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-chat_id = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+bot_token = "8575237777:AAHDxDYRu-m_bpb9vb2lfCpIDETXpBEdUtU"  #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+chat_id = "-1003289508299"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
 paper_setting = True
-adf_max = 0.10  # UP: more looser, DOWN: more tight. noticed from WFA that 0.05 is kinda tight after the kalman update
-hurst_max = 0.6  # supposed to be 0.5 according to its defintiion, but that is too tight
+adf_max = 0.2  # UP: more looser, DOWN: more tight. noticed from WFA that 0.05 is kinda tight after the kalman update
+hurst_max = 0.8  # supposed to be 0.5 according to its defintiion, but that is too tight
 
 if len(sys.argv) != 3:
     print("Usage: python trader.py <ASSET_A> <ASSET_B>")
@@ -554,10 +554,8 @@ def log_status(current_z, beta, p_value, hurst, price_a, price_b, position, pos_
                loop_start_time, is_rth):
     global last_heartbeat_time
 
-    # determine rth status
     rth_status = "OPEN (RTH)" if is_rth else "CLOSED"
 
-    # console output (ALWAYS PRINTED)
     status_msg = (
         f"\n--- {loop_start_time.strftime('%Y-%m-%d %H:%M:%S')} | MARKET: {rth_status} --- Z: {current_z:.4f} | Beta: {beta:.4f} | ADF P: {p_value:.4f} | Hurst: {hurst:.4f}\n"
         f"Price {ASSET_A}: ${price_a:.2f} | Price {ASSET_B}: ${price_b:.2f}\n"
@@ -565,7 +563,6 @@ def log_status(current_z, beta, p_value, hurst, price_a, price_b, position, pos_
     )
     print(status_msg)
 
-    # tele alert constantly
     current_time_utc = datetime.now(timezone.utc)
 
     if is_rth and (current_time_utc - last_heartbeat_time).total_seconds() >= tele_interval:
