@@ -4,7 +4,7 @@ This is a pairs trading algorithm utilizing Kalman Filters and Hurst Exponents t
 
 Below is the architecture of the whole system:
 
-![System Architecture](assets/Design.png)
+![System Architecture](assets/design.png)
 
 ## This repository contains the code for:
 
