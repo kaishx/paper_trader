@@ -434,20 +434,25 @@ def calc_hurst(series, window=100):
 
 
 def calculateSignal(data):
+    z_window = 390
+
     Y = data['Log_A'].values
     X = data['Log_B'].values
     beta_series = calc_kalman(Y, X)
 
     latest_beta = beta_series[-1]
-
     data['Kalman_Beta'] = beta_series
-    data['Spread'] = data['Log_A'] - data['Kalman_Beta'] * data['Log_B']
+
+    rolling_mean_Y = data['Log_A'].rolling(window=z_window).mean()
+    rolling_mean_X = data['Log_B'].rolling(window=z_window).mean()
+
+    data['Alpha'] = rolling_mean_Y - data['Kalman_Beta'] * rolling_mean_X
+
+    data['Spread'] = data['Log_A'] - (data['Alpha'] + data['Kalman_Beta'] * data['Log_B'])
 
     spread_values = data['Spread'].values
     hurst_val = calc_hurst(spread_values, window=100)[-1]
 
-    # change this z_window with increasing it to make the trader more reactive to z-score. found it to be ok at 100? follows the json
-    z_window = 100
     spread_tail = data['Spread'].iloc[-z_window:]
 
     mean = spread_tail.mean()
@@ -456,9 +461,8 @@ def calculateSignal(data):
 
     z_score = (latest_spread - mean) / std if std > 0 else np.nan
 
-    # adf check (legacy) quite useless now tbh considering i have kalman which literally makes adf like close to 0 for everything... can consider removing to improve performance time as i heard adfuller is a pretty heavy fn
     try:
-        adf_p = adfuller(data['Spread'].dropna().tail(100), autolag='AIC')[1]
+        adf_p = adfuller(data['Spread'].dropna().tail(z_window), autolag='AIC')[1]
     except:
         adf_p = 1.0
 
