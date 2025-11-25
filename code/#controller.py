@@ -5,11 +5,12 @@ import threading
 
 # TMEPLATE : ("XXX", "YYY")
 pairs = [
-    ("XXX", "YYY"),
+    ("XXX", "XXX")
 ]
 
-traderScript = "#trader.py"  # make sure the name is correct
-delay = 10   # seconds between launching each trader
+
+traderScript = "#trader.py"  # make sure the name and debug (OFF) is correct. dont think you launched 20 of the non-tests ones, off the laptop then sleep lol
+delay = 5   # seconds between launching each trader
 
 def monitor(proc, asset_a, asset_b):
     for line in iter(proc.stdout.readline, ''):
@@ -50,4 +51,3 @@ if __name__ == "__main__":
         print("KeyboardInterrupt detected. Terminating all traders...")
         for proc, _, _ in procs:
             proc.terminate()
-

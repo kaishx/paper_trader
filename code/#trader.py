@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import numpy as np
 import requests  # for tele alerts
-import yfinance as yf # old and archaic, keeping it around.
+import yfinance as yf  # old and archaic, keeping it around.
 from datetime import datetime, timedelta, timezone
 from scipy.stats import linregress
 from statsmodels.tsa.stattools import adfuller
@@ -11,6 +11,9 @@ import sys
 import builtins  # for flushing prints to the main controller
 import math
 from numba import njit
+import threading
+import os
+import pickle
 
 # alpaca imports, be careful with how its named in documentation. ai always give wrong imports, have to read documentation for this
 from alpaca.data import StockHistoricalDataClient, TimeFrame, TimeFrameUnit
@@ -25,14 +28,15 @@ print = lambda *args, **kwargs: builtins.print(*args, **kwargs, flush=True)
 
 # api
 API_KEY_ID = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-API_SECRET_KEY = "YYY"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_SECRET_KEY = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
-bot_token = "XXX"  #HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-chat_id = "YYY"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+bot_token = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+chat_id = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
 
 paper_setting = True
-adf_max = 0.2  # UP: more looser, DOWN: more tight. noticed from WFA that 0.05 is kinda tight after the kalman update
-hurst_max = 0.8  # supposed to be 0.5 according to its defintiion, but that is too tight
+adf_max = 0.2
+hurst_max = 0.8
+# these may seem random, but i assure you, they are empirically picked based on my WFA results.
 
 if len(sys.argv) != 3:
     print("Usage: python trader.py <ASSET_A> <ASSET_B>")
@@ -43,23 +47,23 @@ ASSET_B = sys.argv[2]
 
 # keep this here so i can paste it back everytime i remove above to debug through trader.py without goin thru the controller
 # if len(sys.argv) != 3:
-# print("Usage: python trader.py <ASSET_A> <ASSET_B>")
-# sys.exit(1)
+#   print("Usage: python trader.py <ASSET_A> <ASSET_B>")
+#   sys.exit(1)
 
 # ASSET_A = sys.argv[1]
 # ASSET_B = sys.argv[2]
 
 # FOR DEBUG
-# ASSET_A = "GOOG"
-# ASSET_B = "GOOGL"
+# ASSET_A = "CRL"
+# ASSET_B = "IQV"
 
 print(f"Trader started for pair: {ASSET_A}/{ASSET_B}")
 
 # settings
-trade_interval = 60
-sleepSeconds = 300
+trade_interval = 90
+sleepSeconds = 180
 tele_interval = 180
-assigned_cptl = 10000 # todo: check literature for recommended allocation for capital in relation to total capital
+assigned_cptl = 100000  # TODO: check literature for recommended allocation for capital in relation to total capital
 
 Z_ENTRY = None
 Z_EXIT = None
@@ -77,6 +81,92 @@ entry_price_a = None
 entry_price_b = None
 entry_pos_type = None
 
+PERSISTENCE_DIR = '/tmp/trader_data'
+BAR_CACHE_PATH = os.path.join(PERSISTENCE_DIR, f'cache_{ASSET_A}_{ASSET_B}.pkl')
+STATE_FILE_PATH = os.path.join(PERSISTENCE_DIR, f'state_{ASSET_A}_{ASSET_B}.json')
+GLOBAL_DATA_CACHE = None
+
+
+def ensure_persistence_dir():
+    os.makedirs(PERSISTENCE_DIR, exist_ok=True)
+
+def save_state():
+    global entry_price_a, entry_price_b, entry_pos_type
+    try:
+        ensure_persistence_dir()
+        state = {
+            "entry_price_a": entry_price_a,
+            "entry_price_b": entry_price_b,
+            "entry_pos_type": entry_pos_type,
+            "last_save_time": datetime.now(timezone.utc).isoformat()
+        }
+        with open(STATE_FILE_PATH, 'w') as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f"!!! Warning: Failed to save state to {STATE_FILE_PATH}: {e}")
+
+def load_state():
+    global entry_price_a, entry_price_b, entry_pos_type
+    if not os.path.exists(STATE_FILE_PATH):
+        return
+
+    try:
+        with open(STATE_FILE_PATH, 'r') as f:
+            state = json.load(f)
+
+        if state.get("entry_price_a") is not None:
+             entry_price_a = float(state["entry_price_a"])
+        if state.get("entry_price_b") is not None:
+             entry_price_b = float(state["entry_price_b"])
+        entry_pos_type = state["entry_pos_type"]
+
+        if entry_pos_type is not None:
+             print(f"Loaded persistent state: {entry_pos_type} entered at A={entry_price_a}, B={entry_price_b}")
+
+    except Exception as e:
+        print(f"!!! Warning: Failed to load state from {STATE_FILE_PATH}: {e}")
+
+def clear_state():
+    global entry_price_a, entry_price_b, entry_pos_type
+    entry_price_a = None
+    entry_price_b = None
+    entry_pos_type = None
+    if os.path.exists(STATE_FILE_PATH):
+        try:
+            os.remove(STATE_FILE_PATH)
+            print(f"Cleared persistent state file: {STATE_FILE_PATH}")
+        except Exception as e:
+            print(f"!!! Warning: Failed to delete state file: {e}")
+
+def save_bar_cache():
+    global GLOBAL_DATA_CACHE
+    if GLOBAL_DATA_CACHE is None or GLOBAL_DATA_CACHE.empty:
+        return
+    try:
+        ensure_persistence_dir()
+        with open(BAR_CACHE_PATH, 'wb') as f:
+            pickle.dump(GLOBAL_DATA_CACHE, f)
+    except Exception as e:
+        print(f"!!! Warning: Failed to save bar cache to {BAR_CACHE_PATH}: {e}")
+
+def load_bar_cache():
+    global GLOBAL_DATA_CACHE
+    if not os.path.exists(BAR_CACHE_PATH):
+        GLOBAL_DATA_CACHE = None
+        return
+
+    try:
+        with open(BAR_CACHE_PATH, 'rb') as f:
+            GLOBAL_DATA_CACHE = pickle.load(f)
+            if not isinstance(GLOBAL_DATA_CACHE, pd.DataFrame):
+                 GLOBAL_DATA_CACHE = None
+                 print("Loaded cache was invalid, starting fresh.")
+            else:
+                print(f"Loaded cache for {ASSET_A}/{ASSET_B} with {len(GLOBAL_DATA_CACHE)} bars.")
+
+    except Exception as e:
+        print(f"!!! Warning: Failed to load bar cache: {e}. Starting fresh.")
+        GLOBAL_DATA_CACHE = None
 
 def send_tele(message, alert_type="INFO"):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -92,7 +182,7 @@ def send_tele(message, alert_type="INFO"):
         "MARKET": ""
     }
 
-    full_message = f"{msgTypeMap.get(alert_type, '💬')} *[{alert_type}]*\n{message}"
+    full_message = f"{msgTypeMap.get(alert_type, '')} *[{alert_type}]*\n{message}"
 
     payload = {
         'chat_id': chat_id,
@@ -113,7 +203,7 @@ def send_tele(message, alert_type="INFO"):
         print(f"Telegram Alert Sent ({alert_type}).")
 
     except requests.exceptions.HTTPError as http_err:
-        print(f"telegram failed to send msg due to HTTP error: ({http_err.response.status_code})")
+        print(f"!!! telegram failed to send msg due to HTTP error: ({http_err.response.status_code})")
         try:
             print(f"    Response: {http_err.response.text}")
         except Exception:
@@ -129,25 +219,21 @@ def load_param(file_path='optimized_params.json'):
         with open(file_path, 'r') as f:
             params = json.load(f)
 
-        LOOKBACK_WINDOW = params.get('metadata', {}).get('rolling_window_bars', 5000)
+        LOOKBACK_WINDOW = params.get('metadata', {}).get('rolling_window_bars', 1000)
 
-        found = False
-        for result in params.get('optimization_results', []):
-            if result['asset_a'] == ASSET_A and result['asset_b'] == ASSET_B:
-                Z_ENTRY = result['optimal_z_entry']
-                Z_EXIT = result['optimal_z_exit']
-                Z_STOP_LOSS = result['optimal_z_stop_loss']
-                found = True
-                print(f"✅ Loaded optimized parameters for {ASSET_A}/{ASSET_B}:")
-                print(
-                    f"   Z_ENTRY={Z_ENTRY}, Z_EXIT={Z_EXIT}, Z_STOP_LOSS={Z_STOP_LOSS}, LOOKBACK_WINDOW={LOOKBACK_WINDOW}")
-                break
+        key = f"{ASSET_A}/{ASSET_B}"
 
-        if not found:
-            print(f"no params found for {ASSET_A}/{ASSET_B} in '{file_path}'.")
-            return False
+        if key in params:
+            Z_ENTRY = params[key]["z_entry"]
+            Z_EXIT = params[key]["z_exit"]
+            Z_STOP_LOSS = params[key]["z_sl"]
+            print(f"! loaded optimized parameters for {ASSET_A}/{ASSET_B}:")
+            print(
+                f"   Z_ENTRY={Z_ENTRY}, Z_EXIT={Z_EXIT}, Z_STOP_LOSS={Z_STOP_LOSS}, LOOKBACK_WINDOW={LOOKBACK_WINDOW}")
 
-        return True
+            return True
+        else:
+            print("no params found")
 
     except FileNotFoundError:
         print(f" json params file '{file_path}' not found.")
@@ -157,58 +243,136 @@ def load_param(file_path='optimized_params.json'):
         return False
 
 
-def get_raw(symbol, start, end, timeframe):
-    request_params = StockBarsRequest(
-        symbol_or_symbols=[symbol],
-        timeframe=timeframe,
-        start=start.isoformat(),
-        end=end.isoformat(),
-        feed=DataFeed.IEX,
-        adjustment="all"
-    )
+# read documentation for alpaca paper which APPARENTLY trades at the NBBO or wtv its called
+# so technically i can get around bad alpaca IEX with like, using yfinance as the ... 'eyes'? and alpaca with the hands
+# THis is a frankenstein setup which now relies on two systems to run happily but istg im tired of the bad iex data
+def get_price(asset_a, asset_b):
+    symbols = [asset_a, asset_b]
+    price_map = {asset_a: np.nan, asset_b: np.nan}
 
-    # alpaca first
-    for attempt in range(3):
+    print(f"Fetching latest prices for {asset_a}/{asset_b} via Yahoo Finance...")
+
+    for sym in symbols:
         try:
-            bars = data_client.get_stock_bars(request_params).df
-            if not bars.empty:
-                close_prices = bars.loc[(symbol, slice(None)), 'close'].rename(f'Close_{symbol}')
-                return close_prices.droplevel('symbol')
+            ticker = yf.Ticker(sym)
+            price = ticker.fast_info.get('last_price')
+
+            if price is None or np.isnan(price):
+                todays_data = ticker.history(period='1d', interval='1m')
+                if not todays_data.empty:
+                    price = todays_data['Close'].iloc[-1]
+
+            if price is not None and price > 0:
+                price_map[sym] = float(price)
+                print(f"Price {sym}: ${price:.2f}")
+            else:
+                print(f"Could not find price for {sym}")
+
         except Exception as e:
-            print(f"alpaca attempt {attempt + 1} failed for {symbol}: {e}")
-            time.sleep(2 ** attempt)
+            print(f"!!!Error fetching {sym}: {e}")
 
-    print(f"❌ Failed to fetch data for {symbol} after 3 attempts.")
-    return None
+    return float(price_map[asset_a]), float(price_map[asset_b])
 
 
-def filters_data(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit.Minute)):
+def get_history_from_yahoo(symbol, start_date, end_date, timeframe):
+    if timeframe.unit == TimeFrameUnit.Minute:
+        if timeframe.amount == 15:
+            yf_interval = "15m"
+        elif timeframe.amount == 5:
+            yf_interval = "5m"
+        else:
+            yf_interval = "1m"
+    else:
+        yf_interval = "1d"
+
+    max_days_limit = 59
+    min_start_date = datetime.now() - timedelta(days=max_days_limit)
+
+    if start_date < min_start_date and "m" in yf_interval:
+        print(
+            f"{symbol}: Request ({start_date.date()}) exceeds Yahoo 60d limit. Capping to {min_start_date.date()}.")
+        start_date = min_start_date
+
     try:
-        end_date = datetime.now()
+        ticker = yf.Ticker(symbol)
+        bars = ticker.history(start=start_date - timedelta(minutes=1), end=end_date, interval=yf_interval)
 
-        days_to_fetch = int((lookback / 26) * 2.0) + 10
-        start_date = end_date - timedelta(days=days_to_fetch)
+        if bars.empty:
+            print(f"No history found for {symbol}")
+            return None
 
-        data_a = get_raw(asset_a, start_date, end_date, timeframe)
-        data_b = get_raw(asset_b, start_date, end_date, timeframe)
+        return bars['Close']
 
-        if data_a is None or data_b is None:
-            raise Exception("failed to retrieve latest data.")
+    except Exception as e:
+        print(f"    [YF] History fetch failed for {symbol}: {e}")
+        return None
 
-        data = pd.concat([data_a, data_b], axis=1).dropna()
+def filters_data(asset_a, asset_b, lookback, timeframe=TimeFrame(1, TimeFrameUnit.Minute)):
 
-        # rth filter
+    global GLOBAL_DATA_CACHE
+
+    # load cache on first run if not already loaded (initialization phase)
+    if GLOBAL_DATA_CACHE is None:
+        load_bar_cache()
+
+    end_date = datetime.now()
+    max_history_days = 58
+
+
+    if GLOBAL_DATA_CACHE is not None and not GLOBAL_DATA_CACHE.empty:
+        last_ts = GLOBAL_DATA_CACHE.index[-1].to_pydatetime()
+        start_date = last_ts + timedelta(minutes=1)
+        print(f"CACHE HIT: Fetching new bars from {start_date.strftime('%Y-%m-%d %H:%M')}")
+    else:
+        start_date = end_date - timedelta(days=max_history_days)
+        print(f"CACHE MISS: Performing initial {max_history_days}-day fetch from {start_date.strftime('%Y-%m-%d %H:%M')}")
+
+
+    try:
+        series_a = get_history_from_yahoo(asset_a, start_date, end_date, timeframe)
+        series_b = get_history_from_yahoo(asset_b, start_date, end_date, timeframe)
+
+        new_data = None
+        if series_a is not None and series_b is not None:
+            new_data = pd.concat([series_a, series_b], axis=1).dropna()
+            new_data.columns = [f'Close_{asset_a}', f'Close_{asset_b}']
+
+        if new_data is not None and not new_data.empty:
+            if GLOBAL_DATA_CACHE is None:
+                GLOBAL_DATA_CACHE = new_data
+            else:
+                GLOBAL_DATA_CACHE = pd.concat([GLOBAL_DATA_CACHE, new_data], axis=0).drop_duplicates(
+                    keep='last')
+                GLOBAL_DATA_CACHE.sort_index(inplace=True)
+
+            save_bar_cache()
+
+
+        if GLOBAL_DATA_CACHE is None or GLOBAL_DATA_CACHE.empty:
+            print("Failed to retrieve sufficient historical data from Yahoo/Cache.")
+            return None
+
+        data = GLOBAL_DATA_CACHE.copy()
+        data = data.ffill().dropna()
+
         if data.index.tz is None:
-            data = data.tz_localize('UTC')
-        local_data = data.tz_convert('US/Eastern')
-        rth_filter = (
-                (local_data.index.hour >= 9) &
-                ((local_data.index.hour != 9) | (local_data.index.minute >= 30)) &
-                (local_data.index.hour < 16)
-        )
+            data = data.tz_localize('US/Eastern')
+        else:
+            data.index = data.index.tz_convert('US/Eastern')
+
+        rth_filter = ((data.index.hour > 9) | ((data.index.hour == 9) & (data.index.minute >= 30))) & (data.index.hour < 16)
         data = data[rth_filter]
 
+        MAX_BARS_TO_KEEP = 60 * 24 * 60
+        if len(data) > MAX_BARS_TO_KEEP:
+            data = data.iloc[-MAX_BARS_TO_KEEP:]
+            GLOBAL_DATA_CACHE = data.copy()
+
         data = data.iloc[-(lookback + 50):]
+
+        if data.empty or len(data) < 200:
+             print(f"!!! Warning: Only {len(data)} bars after filtering/truncating.")
+             return None
 
         data['Log_A'] = np.log(data[f'Close_{asset_a}'])
         data['Log_B'] = np.log(data[f'Close_{asset_b}'])
@@ -218,7 +382,6 @@ def filters_data(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUn
     except Exception as e:
         print(f"filters_data() error: {e}")
         return None
-
 
 @njit
 def calc_kalman(y, x, delta=1e-4, ve=1e-3):
@@ -240,6 +403,7 @@ def calc_kalman(y, x, delta=1e-4, ve=1e-3):
         beta[t] = state_mean
 
     return beta
+
 
 @njit
 def calc_hurst(series, window=100):
@@ -276,7 +440,7 @@ def calculateSignal(data):
     hurst_val = calc_hurst(spread_values, window=100)[-1]
 
     # change this z_window with increasing it to make the trader more reactive to z-score. found it to be ok at 100? follows the json
-    z_window = 100 
+    z_window = 100
     spread_tail = data['Spread'].iloc[-z_window:]
 
     mean = spread_tail.mean()
@@ -285,43 +449,13 @@ def calculateSignal(data):
 
     z_score = (latest_spread - mean) / std if std > 0 else np.nan
 
-    # adf check (legacy)
+    # adf check (legacy) quite useless now tbh considering i have kalman which literally makes adf like close to 0 for everything... can consider removing to improve performance time as i heard adfuller is a pretty heavy fn
     try:
         adf_p = adfuller(data['Spread'].dropna().tail(100), autolag='AIC')[1]
     except:
         adf_p = 1.0
 
     return latest_beta, z_score, std, latest_spread, adf_p, hurst_val
-
-
-def get_price(asset_a, asset_b):
-    symbols = [asset_a, asset_b]
-    price_map = {asset_a: np.nan, asset_b: np.nan}
-
-    print("Fetching latest price via Alpaca REST API...")
-
-    try:
-        quotes = data_client.get_stock_latest_quote(StockLatestQuoteRequest(symbol_or_symbols=symbols))
-
-        for sym in symbols:
-            quote = quotes.get(sym)
-            if quote is None:
-                print(f"Alpaca: no quote object for {sym}")
-                continue
-            bid = getattr(quote, "bid_price", None)
-            ask = getattr(quote, "ask_price", None)
-
-            if bid and ask and bid > 0 and ask > 0:
-                mid_price = (bid + ask) / 2.0
-                price_map[sym] = float(mid_price)
-                print(f"Price {sym} (Alpaca Mid-Quote): ${mid_price:.2f}")
-            else:
-                print(f"Alpaca: quote for {sym} missing bid/ask (bid={bid}, ask={ask}). Will fallback per-symbol.")
-    except Exception as e:
-        print(f"Alpaca request failed with exception: {type(e).__name__}: {e}")
-
-    return float(price_map[asset_a]), float(price_map[asset_b])
-
 
 def getCurrentPos(asset_a, asset_b):
     try:
@@ -340,17 +474,15 @@ def getCurrentPos(asset_a, asset_b):
         # check if pos open
         if (pos_a is not None or pos_b is not None) and (qty_a != 0 or qty_b != 0):
 
-            # long A short B
             if qty_a > 0 and qty_b < 0:
                 return 1, qty_a, qty_b
-            # short A long B
             elif qty_a < 0 and qty_b > 0:
                 return -1, qty_a, qty_b
 
         return 0, 0, 0
 
     except Exception as e:
-        print(f"Error checking position: {e}")
+        print(f"!!! Error checking position: {e}")
         return 0, 0, 0
 
 
@@ -368,15 +500,14 @@ def print_pnl_stats():
         except AttributeError:
             pnl_today = np.nan  # use nan if the attribute is missing
 
-        print("\n📈📊 **--- TRADE CLOSED: PNL REPORT ---** 📊📈")
-        print(f"💰 Account Equity: ${equity:,.2f}")
-        print(f"🔥 PnL for Today (Approximation): ${pnl_today:,.2f}")
-        print("------------------------------------------")
+        print("\n**- TRADE CLOSED: PNL REPORT -**")
+        print(f"current equity: ${equity:,.2f}")
+        print(f"today's PnL: ${pnl_today:,.2f}")
 
         return equity, pnl_today
 
     except Exception as e:
-        print(f"⚠️ Warning: Could not fetch PnL stats from Alpaca: {e}")
+        print(f"!!! Warning: Could not fetch PnL stats from Alpaca: {e}")
         return equity, pnl_today
 
 
@@ -413,78 +544,194 @@ def determine_sizing(asset_a_price, asset_b_price, beta, spread_volatility):
     return raw_shares_a, raw_shares_b, qty_a, qty_b, actual_V_A, actual_V_B
 
 
-def submit_order(symbol, qty, side, limit_price=None, wait_interval=1, max_wait_seconds=20):
+def submit_order(symbol, qty, side, limit_price=None, order_type='LIMIT'):
+    default_return = (False, 0.0, None, 0.0)
+
+    max_wait_seconds = 30 if order_type == 'LIMIT' else 10
+    retry_interval = 0.5  # Start at 0.5s
+    max_retries = int(max_wait_seconds / retry_interval) * 2
+
     try:
         if qty <= 0:
-            return False, 0.0
+            return default_return
 
-        quote = data_client.get_stock_latest_quote(
-            StockLatestQuoteRequest(symbol_or_symbols=[symbol])
-        ).get(symbol)
+        order = None
+        if order_type == 'MARKET':
+            request = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                time_in_force=TimeInForce.FOK
+            )
+            order = trading_client.submit_order(request)
+            print(f"Placed MARKET {side.value} {qty} {symbol}")
 
-        bid = getattr(quote, "bid_price", None)
-        ask = getattr(quote, "ask_price", None)
+        else:
+            if limit_price is None:
+                quote = data_client.get_stock_latest_quote(
+                    StockLatestQuoteRequest(symbol_or_symbols=[symbol])
+                ).get(symbol)
 
-        if limit_price is None:
-            if side == OrderSide.BUY:
-                limit_price = ask  # aggressive but safer fill
-            else:
-                limit_price = bid
+                bid = getattr(quote, "bid_price", None)
+                ask = getattr(quote, "ask_price", None)
 
-        if limit_price is None or limit_price <= 0:
-            # fallback if quote fails, use last trade or something safe, or just abort
-            print(f"⚠️ Limit price could not be determined for {symbol} (bid={bid}, ask={ask}). Aborting order.")
-            return False, 0.0
+                if side == OrderSide.BUY:
+                    limit_price = ask
+                else:
+                    limit_price = bid
 
-        request = LimitOrderRequest(
-            symbol=symbol,
-            qty=qty,
-            side=side,
-            limit_price=limit_price,
-            time_in_force=TimeInForce.GTC
-        )
+            if limit_price is None or limit_price <= 0:
+                print(f"Limit price could not be determined for {symbol}. Aborting order.")
+                return default_return
 
-        order = trading_client.submit_order(request)
-        print(f"Placed LIMIT {side.value} {qty} {symbol} @ {limit_price:.2f}")
+            request = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                limit_price=limit_price,
+                time_in_force=TimeInForce.GTC
+            )
 
-        total_waited = 0
+            order = trading_client.submit_order(request)
+            print(f"Placed LIMIT {side.value} {qty} {symbol} @ {limit_price:.2f}")
+
         filled_qty = 0.0
+        filled_avg_price = 0.0
 
-        while total_waited < max_wait_seconds:
+        for i in range(max_retries):
+            wait_time = min(retry_interval * (2 ** i), 5.0)
+            if i > 0:
+                time.sleep(wait_time)
+
             order_status = trading_client.get_order_by_id(order.id)
             filled_qty = float(order_status.filled_qty)
+            filled_avg_price = float(getattr(order_status, 'filled_avg_price', 0.0))
 
-            if 0 < filled_qty < qty:
-                print(f"Partial Fill: {filled_qty}/{qty}")
-
-            if order_status.status in ["filled", "canceled", "rejected"]:
+            if order_status.status in ["filled", "canceled", "rejected", "expired"]:
                 break
 
-            time.sleep(wait_interval)
-            total_waited += wait_interval
+            if filled_qty > 0 and filled_qty < qty:
+                print(f"Partial Fill: {filled_qty}/{qty}")
 
-        print(f"Filled: {filled_qty}/{qty}")
+            if i == max_retries - 1 and order_status.status == "working":
+                print(f"Order {order.id} for {symbol} still working after timeout. Forcing cancel.")
+                trading_client.cancel_order(order.id)
+                time.sleep(1)
+                order_status = trading_client.get_order_by_id(order.id)
+                filled_qty = float(order_status.filled_qty)
+                break
 
-        send_tele(
-            f"Limit order {side.value} {symbol} executed: {filled_qty}/{qty} shares @ {limit_price:.2f}",
-            alert_type="INFO"
-        )
+        order_status = trading_client.get_order_by_id(order.id)
 
-        return filled_qty > 0, filled_qty
+        if filled_qty == 0.0:
+            print(f"Order {order.id} for {symbol} failed with 0 fill. Status: {order_status.status}.")
+            send_tele(f"Order {order.id} for {symbol} failed (0 fill). Status {order_status.status}.",
+                      alert_type="ERROR")
+            return default_return
+
+        if filled_qty < qty and order_status.status == "working":
+            # this should ideally be caught by the timeout logic above, but added for safety
+            trading_client.cancel_order(order.id)
+            print(f"Canceled remaining working order for {symbol}: {order.id}")
+            time.sleep(1)  # Final wait
+            order_status = trading_client.get_order_by_id(order.id)
+
+        print(f"Final Fill: {filled_qty}/{qty} @ ${filled_avg_price:.2f} (ID: {order.id})")
+
+        if filled_qty > 0:
+            send_tele(
+                f"{order_type} order {side.value} {symbol} executed: {filled_qty}/{qty} shares @ {filled_avg_price:.2f}",
+                alert_type="INFO"
+            )
+
+        return True, filled_qty, order.id, filled_avg_price
 
     except Exception as e:
-        print(f"LIMIT order failed: {e}")
-        send_tele(f"LIMIT order failed for {symbol}: {e}", alert_type="ERROR")
-        return False, 0.0
+        print(f"CRITICAL: {order_type} order failed for {symbol}: {e}")
+        send_tele(f"CRITICAL: {order_type} order failed for {symbol}: {e}", alert_type="ERROR")
+        return default_return
 
 
+def place_order_thread(result_dict, key, symbol, qty, side, order_type='LIMIT'):
+    ok, filled, oid, avg = submit_order(symbol, qty, side, order_type=order_type)
+    result_dict[key] = {"ok": ok, "filled": filled, "order_id": oid, "avg": avg, "qty": qty, "side": side}
+
+
+def enter_pair_atomic(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPriceA, lastPriceB,
+                      entry_type, order_type='LIMIT'):
+    global last_trade_time, entry_pos_type, entry_price_a, entry_price_b
+
+    side_a = OrderSide.BUY if entry_type == "LONG_SPREAD_ENTRY" else OrderSide.SELL
+    side_b = OrderSide.SELL if entry_type == "LONG_SPREAD_ENTRY" else OrderSide.BUY
+
+    results = {}
+    t1 = threading.Thread(target=place_order_thread,
+                          args=(results, 'A', ASSET_A, qty_a, side_a, order_type))
+    t2 = threading.Thread(target=place_order_thread,
+                          args=(results, 'B', ASSET_B, qty_b, side_b, order_type))
+
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    res_a = results.get('A', {"filled": 0.0, "qty": qty_a, "side": side_a})
+    res_b = results.get('B', {"filled": 0.0, "qty": qty_b, "side": side_b})
+
+    filled_a, filled_b = res_a['filled'], res_b['filled']
+
+    if filled_a == qty_a and filled_b == qty_b:
+        print("Atomic Entry SUCCESS: Both legs fully filled.")
+        entry_price_a = lastPriceA
+        entry_price_b = lastPriceB
+        entry_pos_type = entry_type
+        save_state()
+
+        alert_msg = (
+            f"New Pair Trade Entered: {entry_type.replace('_', ' ')}.\n"
+            f"Z-Score: {current_z:.4f} | Beta: {beta:.4f} | Hurst: {hurst:.4f}\n"
+            f"Orders Filled: {ASSET_A} ({filled_a:.0f} shares), {ASSET_B} ({filled_b:.0f} shares)"
+        )
+        send_tele(alert_msg, alert_type="ENTRY")
+        last_trade_time = datetime.now(timezone.utc)
+        return True
+
+    if filled_a > 0 or filled_b > 0:
+        print("Atomic Entry FAILURE: Asymmetric/Partial fill detected. IMMEDIATELY neutralizing residual positions.")
+
+        qty_to_close_a = filled_a
+        qty_to_close_b = filled_b
+
+        if qty_to_close_a > 0:
+            opposite_a = OrderSide.SELL if res_a['side'] == OrderSide.BUY else OrderSide.BUY
+            print(f"ROLLBACK: Closing {qty_to_close_a:.0f} of {ASSET_A} via MARKET.")
+            submit_order(ASSET_A, int(abs(qty_to_close_a)), opposite_a, order_type='MARKET')
+
+        if qty_to_close_b > 0:
+            opposite_b = OrderSide.SELL if res_b['side'] == OrderSide.BUY else OrderSide.BUY
+            print(f"ROLLBACK: Closing {qty_to_close_b:.0f} of {ASSET_B} via MARKET.")
+            submit_order(ASSET_B, int(abs(qty_to_close_b)), opposite_b, order_type='MARKET')
+
+        send_tele(
+            f"CRITICAL: Failed to enter {ASSET_A}/{ASSET_B} atomically. Rollback attempted.\n"
+            f"Requested: A={qty_a}, B={qty_b} | Filled: A={filled_a:.0f}, B={filled_b:.0f}",
+            alert_type="ERROR"
+        )
+
+    else:
+        print("Atomic Entry FAILURE: Zero fill on both legs. No residual positions to clean up.")
+
+    return False
+
+
+# USE MARKET ORDER for liquidate becuse i dont wanna be caught holding only one side of the spread if my limit order fails
 def liquidate(reason="No reason provided."):
     global entry_price_a, entry_price_b, entry_pos_type
 
     print(f"[LIQUIDATE] entry_price_a={entry_price_a}, entry_price_b={entry_price_b}, entry_pos_type={entry_pos_type}")
 
     lastPriceA, lastPriceB = get_price(ASSET_A, ASSET_B)
-    position, qty_a, qty_b = getCurrentPos(ASSET_A, ASSET_B)
+    position, qty_a_open, qty_b_open = getCurrentPos(ASSET_A, ASSET_B)
 
     if position == 0:
         print("No open position to liquidate.")
@@ -492,42 +739,68 @@ def liquidate(reason="No reason provided."):
             f"Liquidate called for {ASSET_A}/{ASSET_B} but no open pair position was found.\nReason: {reason}",
             alert_type="EXIT"
         )
+        clear_state()
         return
 
     equity_pre, pnl_today_pre = print_pnl_stats()
 
-    try:
+    qty_a_initial, qty_b_initial = qty_a_open, qty_b_open
+
+    def close_legs(qty_a, qty_b):
+        filled_a, filled_b = 0, 0
         if qty_a != 0:
-            side = OrderSide.SELL if qty_a > 0 else OrderSide.BUY
-            submit_order(ASSET_A, abs(qty_a), side)
+            side_a = OrderSide.SELL if qty_a > 0 else OrderSide.BUY
+            _, filled_a, _, _ = submit_order(ASSET_A, int(abs(qty_a)), side_a, order_type='MARKET')
 
         if qty_b != 0:
-            side = OrderSide.SELL if qty_b > 0 else OrderSide.BUY
-            submit_order(ASSET_B, abs(qty_b), side)
+            side_b = OrderSide.SELL if qty_b > 0 else OrderSide.BUY
+            _, filled_b, _, _ = submit_order(ASSET_B, int(abs(qty_b)), side_b, order_type='MARKET')
+        return filled_a, filled_b
+
+    close_legs(qty_a_initial, qty_b_initial)
+    time.sleep(5)
+
+    MAX_RETRIES = 3
+    for attempt in range(1, MAX_RETRIES + 1):
+        position_post, qty_a_final, qty_b_final = getCurrentPos(ASSET_A, ASSET_B)
+
+        if position_post == 0:
+            print(f"Liquidation successful on attempt {attempt}.")
+            break
+
+        print(f"!!! Warning: Position still open after attempt {attempt}. Retrying MARKET close for residuals.")
+        print(f"Remaining: {ASSET_A}: {qty_a_final:.0f}, {ASSET_B}: {qty_b_final:.0f}")
+
+        close_legs(qty_a_final, qty_b_final)
+
+        if attempt < MAX_RETRIES:
+            time.sleep(5)
+
+    try:
+        position_post, qty_a_final, qty_b_final = getCurrentPos(ASSET_A, ASSET_B)
+
+        if position_post != 0:
+            raise Exception("POSITION_STILL_OPEN")
 
         print(f"LIQUIDATED: Closed all positions for {ASSET_A} and {ASSET_B}.")
-        time.sleep(5)
-
         equity_post, pnl_today_post = print_pnl_stats()
 
         pnl_pair = None
         if entry_price_a is not None and entry_price_b is not None and entry_pos_type is not None:
             if entry_pos_type == "LONG_SPREAD_ENTRY":
-                # long A short B
-                pnl_a = (lastPriceA - entry_price_a) * abs(qty_a)
-                pnl_b = (entry_price_b - lastPriceB) * abs(qty_b)
+                pnl_a = (lastPriceA - entry_price_a) * abs(qty_a_initial)
+                pnl_b = (entry_price_b - lastPriceB) * abs(qty_b_initial)
             elif entry_pos_type == "SHORT_SPREAD_ENTRY":
-                # short A long B
-                pnl_a = (entry_price_a - lastPriceA) * abs(qty_a)
-                pnl_b = (lastPriceB - entry_price_b) * abs(qty_b)
+                pnl_a = (entry_price_a - lastPriceA) * abs(qty_a_initial)
+                pnl_b = (lastPriceB - entry_price_b) * abs(qty_b_initial)
             else:
                 pnl_a = pnl_b = 0.0
 
             pnl_pair = pnl_a + pnl_b
 
-            print(f"Position Sold: {ASSET_A}/{ASSET_B}")
-            print(f"    {ASSET_A}: Entry ${entry_price_a:.2f}, Exit ${lastPriceA:.2f}, Qty {qty_a}")
-            print(f"    {ASSET_B}: Entry ${entry_price_b:.2f}, Exit ${lastPriceB:.2f}, Qty {qty_b}")
+            print(f"Position Closed: {ASSET_A}/{ASSET_B}")
+            print(f"    {ASSET_A}: Entry ${entry_price_a:.2f}, Exit ${lastPriceA:.2f}, Qty {abs(qty_a_initial)}")
+            print(f"    {ASSET_B}: Entry ${entry_price_b:.2f}, Exit ${lastPriceB:.2f}, Qty {abs(qty_b_initial)}")
             print(f"PnL = ${pnl_pair:,.2f}")
 
             send_tele(
@@ -543,11 +816,28 @@ def liquidate(reason="No reason provided."):
                 alert_type="EXIT"
             )
 
-        entry_price_a = entry_price_b = entry_pos_type = None
+        clear_state()
+
 
     except Exception as e:
-        print(f"Liquidation error: {e}")
-        send_tele(f"Liquidation failed for {ASSET_A}/{ASSET_B}: {e}", alert_type="ERROR")
+
+        if str(e) == "POSITION_STILL_OPEN":
+
+            position_final, qty_a_final, qty_b_final = getCurrentPos(ASSET_A, ASSET_B)
+
+            print(f"!!! CRITICAL FAILURE: Liquidation failed after {MAX_RETRIES} attempts.")
+            print(f"Remaining Position: {ASSET_A}: {qty_a_final:.0f}, {ASSET_B}: {qty_b_final:.0f}")
+
+            send_tele(
+                f"!!! CRITICAL WARNING: Liquidation FAILED after {MAX_RETRIES} retries for {ASSET_A}/{ASSET_B}.\n"
+                f"ONE OR BOTH LEGS ARE STILL OPEN.\n"
+                f"Remaining Position: {ASSET_A}: {qty_a_final:.0f}, {ASSET_B}: {qty_b_final:.0f}",
+                alert_type="ERROR"
+            )
+
+        else:
+            print(f"!!! Liquidation error: {e}")
+            send_tele(f"Liquidation failed for {ASSET_A}/{ASSET_B}: {e}", alert_type="ERROR")
 
 
 def log_status(current_z, beta, p_value, hurst, price_a, price_b, position, pos_a, pos_b, acc_eqty,
@@ -557,7 +847,7 @@ def log_status(current_z, beta, p_value, hurst, price_a, price_b, position, pos_
     rth_status = "OPEN (RTH)" if is_rth else "CLOSED"
 
     status_msg = (
-        f"\n--- {loop_start_time.strftime('%Y-%m-%d %H:%M:%S')} | MARKET: {rth_status} --- Z: {current_z:.4f} | Beta: {beta:.4f} | ADF P: {p_value:.4f} | Hurst: {hurst:.4f}\n"
+        f"\n{loop_start_time.strftime('%Y-%m-%d %H:%M:%S')} | MARKET: {rth_status} | Z: {current_z:.4f} | Beta: {beta:.4f} | ADF P: {p_value:.4f} | Hurst: {hurst:.4f}\n"
         f"Price {ASSET_A}: ${price_a:.2f} | Price {ASSET_B}: ${price_b:.2f}\n"
         f"Position: {position} ({ASSET_A}: {pos_a:.0f} shares, {ASSET_B}: {pos_b:.0f} shares) | Equity: ${acc_eqty:,.2f}"
     )
@@ -576,11 +866,14 @@ def log_status(current_z, beta, p_value, hurst, price_a, price_b, position, pos_
         send_tele(alert_msg, alert_type="INFO")
         last_heartbeat_time = current_time_utc
 
-
+# TODO: really gotta cut this down into more functions and less words. i literally have a stroke everytime i try to edit this
 def liveLoop():
     global last_trade_time, entry_pos_type, entry_price_a, entry_price_b
     if not load_param():
         return
+
+    ensure_persistence_dir()
+    load_state()
 
     # TODO: consider removing this, trader is pretty robust in terms of its connection to telegram in the latest version
     send_tele(f"{ASSET_A}/{ASSET_B} BOT STARTED: Initial connectivity check and parameters loaded.", alert_type="INFO")
@@ -591,14 +884,16 @@ def liveLoop():
         f"Running Pairs Trader. Check interval: {trade_interval}s. ADF Filter Threshold: P-Value <= {adf_max}. Hurst < {hurst_max}")
 
     start_pos, start_qty_a, start_qty_b = getCurrentPos(ASSET_A, ASSET_B)
-    if start_pos != 0:
-        print("⚠️ Detected existing open position on startup.")
+
+    if start_pos != 0 and entry_pos_type is None:
+        print("Open position save state missing, deducing its state")
         if start_qty_a > 0:
             entry_pos_type = "LONG_SPREAD_ENTRY"
         else:
             entry_pos_type = "SHORT_SPREAD_ENTRY"
         entry_price_a = 0.0
         entry_price_b = 0.0
+        save_state()
 
     while True:
         if (datetime.now(timezone.utc) - last_trade_time).total_seconds() < cooldown_time:
@@ -608,7 +903,6 @@ def liveLoop():
 
         loop_start_time = datetime.now()
 
-        # initialize variables
         current_z = np.nan
         lastPriceA = np.nan
         lastPriceB = np.nan
@@ -631,19 +925,16 @@ def liveLoop():
             positions = trading_client.get_all_positions()
             current_pos = len(positions)
 
-            # get current position status
             position, pos_a, pos_b = getCurrentPos(ASSET_A, ASSET_B)
 
-            print(f"\n--- ACCOUNT STATUS ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
+            print(f"\n CURRENT ACCOUNT STATUS: ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')})")
             print(f"Current Equity: ${acc_eqty:,.2f}")
             print(f"Available Cash: ${available_cash:,.2f}")
             print(f"Active Positions: {current_pos}")
             print(f"Pairs Position Status: {position} ({ASSET_A}: {pos_a:.0f}, {ASSET_B}: {pos_b:.0f})")
-            print("-----------------------------------")
-
 
         except Exception as e:
-            print(f"Warning: Could not fetch account statistics. Error: {e}")
+            print(f"!!! Warning: Could not fetch account statistics. Error: {e}")
 
         try:
             clock = trading_client.get_clock()
@@ -652,8 +943,7 @@ def liveLoop():
             next_open_str = clock.next_open.strftime('%Y-%m-%d %H:%M:%S %Z')
 
         except Exception as e:
-            # failsafe: assume closed if clock api fails
-            print(f"Error getting market clock: {e}. Assuming market is closed and waiting.")
+            print(f"!!! Error getting market clock: {e}. Assuming market is closed and waiting.")
             is_market_open_rth = False
             market_time_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
             next_open_str = "N/A"
@@ -661,9 +951,8 @@ def liveLoop():
         if not is_market_open_rth:
             print(f"\nMarkt Closed: {market_time_str}. Next open: {next_open_str}. Current position: {position}")
 
-            # tele alert
             current_time_utc = datetime.now(timezone.utc)
-            global last_heartbeat_time  # use heartbeat timer for market close alerts too
+            global last_heartbeat_time
             if (current_time_utc - last_heartbeat_time).total_seconds() >= sleepSeconds:
                 alert_msg = (
                     f"Market Closed. No trading will occur.\n"
@@ -679,7 +968,7 @@ def liveLoop():
 
         try:
             latest_data = filters_data(ASSET_A, ASSET_B, LOOKBACK_WINDOW)
-            if latest_data.empty:
+            if latest_data is None or latest_data.empty:
                 print("No RTH data available. Waiting...")
                 time.sleep(trade_interval)
                 continue
@@ -709,7 +998,6 @@ def liveLoop():
                 print(f"SUSPICIOUS ADF DETECTED: P-Value {p_value:.4f}. Strike {bad_regime_counter}/3")
 
                 if bad_regime_counter >= 3:
-                    # non-stationary regime detected PERSISTENTLY
                     if position != 0:
                         print(
                             f"REGIME SHIFT CONFIRMED: P-Value {p_value:.4f} > {adf_max} for 3 checks. Liquidating.")
@@ -720,10 +1008,8 @@ def liveLoop():
                     print(f"Waiting for confirmation of regime shift...")
 
             else:
-                # reset counter if data is good
                 bad_regime_counter = 0
 
-                # exit/SL logic
                 if position != 0:
                     is_mean_reversion_exit = abs(current_z) <= Z_EXIT
                     is_stop_loss_exit = abs(current_z) >= Z_STOP_LOSS
@@ -740,48 +1026,38 @@ def liveLoop():
                                 reason=f"Stop-loss triggered: Z-Score {current_z:.2f} beyond |ZSTOPLOSS|={Z_STOP_LOSS}")
                             last_trade_time = datetime.now(timezone.utc)
 
-                # entry logic
                 elif position == 0:
                     if abs(current_z) >= Z_ENTRY and Z_STOP_LOSS >= abs(current_z) and hurst < hurst_max:
 
                         shares_a, shares_b, qty_a, qty_b, V_A, V_B = determine_sizing(
                             lastPriceA, lastPriceB, beta, spread_volatility)
 
+                        if qty_a == 0 or qty_b == 0:
+                            print("Sizing resulted in zero quantity for one or both legs. Skipping entry.")
+                            continue
+
                         entry_type = None
+                        if current_z < -Z_ENTRY:
+                            entry_type = "LONG_SPREAD_ENTRY"
+                            print(
+                                f"ENTRY LONG SPREAD: Z-Score {current_z:.2f} < -{Z_ENTRY}. Submitting orders atomically...")
+                        else:
+                            entry_type = "SHORT_SPREAD_ENTRY"
+                            print(
+                                f"ENTRY SHORT SPREAD: Z-Score {current_z:.2f} > +{Z_ENTRY}. Submitting orders atomically...")
 
-                        if qty_a > 0 and qty_b > 0:
-                            if current_z < -Z_ENTRY:
-                                # long A short B
-                                print(f"ENTRY LONG SPREAD: Z-Score {current_z:.2f} < -{Z_ENTRY}")
-                                success_a, done_qty_a = submit_order(ASSET_A, qty_a, OrderSide.BUY)
-                                success_b, done_qty_b = submit_order(ASSET_B, qty_b, OrderSide.SELL)
-                                if success_a and success_b: entry_type = "LONG_SPREAD_ENTRY"
+                        entry_success = enter_pair_atomic(
+                            qty_a, qty_b, current_z, beta, hurst, spread_volatility,
+                            lastPriceA, lastPriceB, entry_type, order_type='LIMIT'
+                        )
 
-                            else:
-                                # short A long B
-                                print(f"ENTRY SHORT SPREAD: Z-Score {current_z:.2f} > +{Z_ENTRY}")
-                                success_a, done_qty_a = submit_order(ASSET_A, qty_a, OrderSide.SELL)
-                                success_b, done_qty_b = submit_order(ASSET_B, qty_b, OrderSide.BUY)
-                                if success_a and success_b: entry_type = "SHORT_SPREAD_ENTRY"
-
-                            if entry_type:
-                                entry_price_a = lastPriceA
-                                entry_price_b = lastPriceB
-                                entry_pos_type = entry_type
-
-                                alert_msg = (
-                                    f"New Pair Trade Entered: {entry_type.replace('_', ' ')}.\n"
-                                    f"Z-Score: {current_z:.4f} | Beta: {beta:.4f} | Hurst: {hurst:.4f}\n"
-                                    f"Orders Sent: {ASSET_A} ({done_qty_a:.0f} shares), {ASSET_B} ({done_qty_b:.0f} shares)\n"
-                                    f"Current Position Status: {ASSET_A}: {qty_a:.0f}, {ASSET_B}: {qty_b:.0f}"
-                                )
-                                send_tele(alert_msg, alert_type="ENTRY")
-
-                                last_trade_time = datetime.now(timezone.utc)
-
+                        if entry_success:
+                            pass
+                        else:
+                            pass
 
         except Exception as e:
-            error_msg = f"An unexpected error occurred in the live loop: {e}. Waiting 5 minutes."
+            error_msg = f"!!! An unexpected error occurred in the live loop: {e}. Waiting 5 minutes."
             print(f"{error_msg}")
 
             alert_msg = f"{ASSET_A}/{ASSET_B} TRADER FACED UNEXPECTED ERROR: {e}\nLast Z-Score: {current_z:.4f} | Equity: ${acc_eqty:,.2f}"
@@ -789,16 +1065,8 @@ def liveLoop():
 
             time.sleep(300)
 
-        now = datetime.now()
-        minutes = now.minute
-        minutes_to_next = 15 - (now.minute % 15)
-        seconds_to_wait = (minutes_to_next * 60) - now.second + 5
-
-        if seconds_to_wait < 0:
-            seconds_to_wait += 900
-
-        print(f"⏳ Syncing with 15m candle... Sleeping for {seconds_to_wait:.0f} seconds.")
-        time.sleep(seconds_to_wait)
+        print(f"Sleeping {trade_interval} seconds...")
+        time.sleep(trade_interval)
 
 
 # for me to debug if the code will send fractional shorts
@@ -819,11 +1087,11 @@ def debug_submit_orders():
 
     if qty_a > 0 and qty_b > 0:
         print(f"Submitting BUY {qty_a} shares of {ASSET_A} and SELL {qty_b} shares of {ASSET_B}")
-        success_a, filled_a = submit_order(ASSET_A, qty_a, OrderSide.BUY)
-        success_b, filled_b = submit_order(ASSET_B, qty_b, OrderSide.SELL)
+        success_a, filled_a, id_a, avg_a = submit_order(ASSET_A, qty_a, OrderSide.BUY)
+        success_b, filled_b, id_b, avg_b = submit_order(ASSET_B, qty_b, OrderSide.SELL)
 
-        print(f"Order Results -> {ASSET_A}: success={success_a}, filled={filled_a}")
-        print(f"Order Results -> {ASSET_B}: success={success_b}, filled={filled_b}")
+        print(f"Order Results -> {ASSET_A}: success={success_a}, filled={filled_a}, ID={id_a}, AvgP={avg_a:.2f}")
+        print(f"Order Results -> {ASSET_B}: success={success_b}, filled={filled_b}, ID={id_b}, AvgP={avg_b:.2f}")
     else:
         print("Quantity too small, skipping order to avoid fractional shares.")
 
@@ -833,7 +1101,7 @@ def debug_model():
 
     print("Loading parameters...")
     if not load_param():
-        print("❌ Could not load parameters. Exiting debug.")
+        print("Could not load parameters. Exiting debug.")
         return
 
     global LOOKBACK_WINDOW
@@ -842,31 +1110,17 @@ def debug_model():
         LOOKBACK_WINDOW = 5000
 
     print("\nFetching lookback data...")
+    # This now uses the I/O optimized path!
     data = filters_data(ASSET_A, ASSET_B, LOOKBACK_WINDOW)
     if data is None or len(data) == 0:
-        print("❌ No data loaded. Exiting debug.")
+        print("No data loaded. Exiting debug.")
         return
 
     print(f"Loaded {len(data)} rows of RTH minute data.")
 
     print("\n>>> Testing spread direction detection...")
-    best = choose_best_spread(data)
-    if best is None:
-        print("❌ Spread test failed.")
-        return
-
-    model_type, beta, intercept, spread_series, adf_p, variance = best
-    print(f"✓ Best Model: {model_type}")
-    print(f"    Beta: {beta:.6f}")
-    print(f"    Intercept: {intercept:.6f}")
-    print(f"    ADF p-value: {adf_p:.6f}")
-    print(f"    Spread Variance: {variance:.6e}")
-
-    print("\n>>> Testing static model cache update...")
-    compute_static_model(data)
-    print("MODEL_CACHE CONTENTS:")
-    for k, v in MODEL_CACHE.items():
-        print(f"   {k}: {v}")
+    # NOTE: choose_best_spread and MODEL_CACHE are missing from the provided code block, skipping this section
+    print("Skipping spread detection test: choose_best_spread/MODEL_CACHE functions are not defined.")
 
     print("\n>>> Testing calculateSignal() ...")
     beta2, z2, std2, latest_spread2, pv2, hurst2 = calculateSignal(data)
@@ -893,5 +1147,4 @@ def debug_model():
 if __name__ == "__main__":
     liveLoop()
     # debug_model()
-
     # debug_submit_orders() #comment out when not debugging
