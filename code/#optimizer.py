@@ -12,6 +12,7 @@ from numba import jit, njit, float64
 from statsmodels.tsa.stattools import adfuller
 import statsmodels.api as sm
 from dotenv import load_dotenv
+import json
 
 load_dotenv()
 
@@ -21,19 +22,27 @@ API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 if not API_KEY_ID or not API_SECRET_KEY:
     raise ValueError("missing API keys. check the environment variables")
 
-# pair ; RMBER the format here is different from the wfa side ["XXX", "YYY"]
-pairs = [
-    ["JPM", "SAP"],
-]
+PAIRS_CONFIG_FILE = "pairs.json"
+if not os.path.exists(PAIRS_CONFIG_FILE):
+    raise FileNotFoundError(f"CRITICAL: {PAIRS_CONFIG_FILE} not found. Please create it.")
 
-cptl = 10000.0
+with open(PAIRS_CONFIG_FILE, "r") as f:
+    pairs = json.load(f)
+
+print(f"Loaded {len(pairs)} pairs from config.")
+
+# seperator -- config below VVV
+cptl = 100000.0
 txfee = 0.0001 #THIS IS NOT IN PERCENT BTW. SO THIS NUMBER * 100 = percentage
 slippagefee = 0.01
 
 # not using ADF here as i wnt this to be an optimizer regardless of regime during this "IS". letting the trader decide if the pair is good enough to trade in real time.
-hurstMax = 0.80
+hurstMax = os.getenv("hurstMax")
+if not hurstMax:
+    raise ValueError("missing hurst max. check the environment variables")
+MIN_TRADES_REQUIRED = 10
 
-Z_ENTRY_GRID = [1.1, 1.3, 1.5, 1.7, 1.9, 2.1, 2.3, 2.5, 2.7, 2.9, 3.1]
+Z_ENTRY_GRID = [1.3, 1.5, 1.7, 1.9, 2.1, 2.3, 2.5]
 Z_EXIT_GRID = [0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5]
 Z_STOP_LOSS_GRID = [3.3, 3.6, 3.9, 4.2, 4.5, 4.8]
 
@@ -83,7 +92,7 @@ def calculate_rolling_hurst(series, window=100):
     return hurst
 
 
-def calculate_spread_and_zscore(data, lookback=78):
+def calculate_spread_and_zscore(data, lookback=390):
     Y = data['Log_A'].values
     X = data['Log_B'].values
 
@@ -200,6 +209,7 @@ def prepare_data(client, symbol_a, symbol_b):
         print(f"Error fetching data: {e}")
         return pd.DataFrame()
 
+
 def find_best_params(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
     df = calculate_spread_and_zscore(df)
 
@@ -219,7 +229,12 @@ def find_best_params(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
     hurst = opt_df['Hurst'].values
 
     best_sharpe = -999.0
-    best_params = (2.1, 0.1, 3.3)  # default backup
+    best_params = (2.1, 0.1, 3.3)
+
+    try:
+        h_max_val = float(hurstMax) if hurstMax else 0.75
+    except ValueError:
+        h_max_val = 0.75
 
     param_combinations = list(itertools.product(Z_ENTRY_GRID, Z_EXIT_GRID, Z_STOP_LOSS_GRID))
 
@@ -228,7 +243,12 @@ def find_best_params(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
             continue
 
         pnl = numba_backtest_core(close_a, close_b, z_score, hurst, z_entry, z_exit, z_sl,
-                                  cptl, tx_fee, slippage, hurstMax)
+                                  cptl, tx_fee, slippage, h_max_val)
+
+        trade_count = np.count_nonzero(pnl)
+
+        if trade_count < MIN_TRADES_REQUIRED:
+            continue
 
         total_pnl = np.sum(pnl)
         if total_pnl == 0:
@@ -236,13 +256,17 @@ def find_best_params(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
         else:
             returns = pnl[pnl != 0] / cptl
             if len(returns) > 1:
-                sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(len(returns))  # rough estimate
+                sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(len(returns))
             else:
                 sharpe = 0.0
 
         if sharpe > best_sharpe:
             best_sharpe = sharpe
             best_params = (z_entry, z_exit, z_sl)
+
+    # If NO combination met the trade requirement, return None or defaults
+    if best_sharpe == -999.0:
+        return None
 
     return {
         "z_entry": best_params[0],
@@ -279,7 +303,6 @@ if __name__ == "__main__":
             print(f"      Stats: Sharpe {result['sharpe']:.2f} | ADF {result['adf_p_value']:.3f}")
         else:
             print("     Optimization failed.")
-#
     with open(PARAMS_FILE, 'w') as f:
         json.dump(final_params, f, indent=4)
 

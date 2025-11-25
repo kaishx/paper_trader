@@ -36,14 +36,14 @@ API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
 chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-if not all([API_KEY_ID, API_SECRET_KEY, bot_token, chat_id]):
+paper_setting = True
+adf_max = os.getenv("adf_max")
+hurst_max = os.getenv("hurstMax")
+# for future me: these may seem random, but empirically picked based on my WFA results.
+
+if not all([API_KEY_ID, API_SECRET_KEY, bot_token, chat_id, adf_max, hurst_max]):
     print("missing API keys. check the environment variables")
     sys.exit(1)
-
-paper_setting = True
-adf_max = 0.2
-hurst_max = 0.8
-# these may seem random, but i assure you, they are empirically picked based on my WFA results.
 
 if len(sys.argv) != 3:
     print("Usage: python trader.py <ASSET_A> <ASSET_B>")
@@ -885,9 +885,6 @@ def liveLoop():
 
     ensure_persistence_dir()
     load_state()
-
-    # TODO: consider removing this, trader is pretty robust in terms of its connection to telegram in the latest version
-    send_tele(f"{ASSET_A}/{ASSET_B} BOT STARTED: Initial connectivity check and parameters loaded.", alert_type="INFO")
 
     bad_regime_counter = 0
 
