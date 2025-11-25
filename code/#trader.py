@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import numpy as np
 import requests  # for tele alerts
-import yfinance as yf  # old and archaic, keeping it around.
+import yfinance as yf
 from datetime import datetime, timedelta, timezone
 from scipy.stats import linregress
 from statsmodels.tsa.stattools import adfuller
@@ -15,7 +15,7 @@ import threading
 import os
 import pickle
 
-# alpaca imports, be careful with how its named in documentation. ai always give wrong imports, have to read documentation for this
+# alpaca imports, be careful with how its named in documentation.
 from alpaca.data import StockHistoricalDataClient, TimeFrame, TimeFrameUnit
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.enums import DataFeed
@@ -23,15 +23,22 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest
+from dotenv import load_dotenv
+
+load_dotenv()
 
 print = lambda *args, **kwargs: builtins.print(*args, **kwargs, flush=True)
 
 # api
-API_KEY_ID = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-API_SECRET_KEY = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+API_KEY_ID = os.getenv("APCA_API_KEY_ID")
+API_SECRET_KEY = os.getenv("APCA_API_SECRET_KEY")
 
-bot_token = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
-chat_id = "XXX"  # HARDCODED BUT REMOVE BEFORE PUTTING ON GITHUB
+bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+if not all([API_KEY_ID, API_SECRET_KEY, bot_token, chat_id]):
+    print("missing API keys. check the environment variables")
+    sys.exit(1)
 
 paper_setting = True
 adf_max = 0.2
