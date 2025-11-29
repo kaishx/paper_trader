@@ -1,33 +1,42 @@
-# Pairs Trading Paper Trading Algorithm
+# Pairs-Trading Engine (Paper Trading, Alpaca + IEX)
+
+This is a **pairs-trading system** that uses dynamic hedge ratios (via a Kalman filter) and mean-reversion signals (via Z-score + Hurst/ADF filters), built to run on the free tier of the Alpaca API (IEX feed + rate-limit / latency constraints).
 
 ---
 
-This is a pairs trading algorithm utilizing Kalman Filters and Hurst Exponents to trade mean-reverting pairs. The system is engineered to operate autonomously on the Alpaca Paper Trading API. It is specifically designed to be robust against the data sparsity and latency constraints of the Alpaca Free Tier (IEX Feed).
-
-Below is the architecture of the whole system:
+## Architecture Overview
 
 ![System Architecture](assets/designnew.png)
 
-*Figure 1: System Architecture demonstrating the decoupling of the Optimization Engine (Historical Calibration) from the Live Execution Engine. The Controller manages multiprocessing to ensure adherence to API rate limits, while the Trader operates on a decoupled asynchronous loop.*
+The design cleanly separates calibration (offline) from execution (live), enabling multiple pairs to trade concurrently while limiting API pressure.
+
+## Contents
+
+- **Controller** — launches and monitors multiple trader processes, spaced out to respect API rate limits.  
+- **Trader** — retrieves streaming data, calculates signals (beta, spread, z-score, volatility, Hurst/ADF), and executes trades (paper mode) on Alpaca.  
+- **Optimizer** — runs historical backtests and calibrates optimal entry/exit thresholds per pair, storing them in a JSON config used by live traders.
 
 ---
 
-## This repository contains the code for:
+## How to Use (Guide)
 
-
-**Controller**: Manages the paper-traders concurrently (seeking to run about 20-25 traders)
-
-**Trader**: Interacts with the Alpaca API to simulate the trading while calculating the kalman beta and other metrics.
-
-**Optimizer**: Backtests recent data to calibrate optimal Z-score entry/exit thresholds for the current trading session.
-
----
-
-**The system monitors equity and positions in real time. Results can be viewed on my Telegram channel:**
-
-[Telegram Channel (equity & positions updates every few minutes)](https://t.me/+12M82bTPLAtjMzZl)
+1. Clone the repo  
+2. Copy `.env.example` to `.env`, and fill in your Alpaca & Telegram API keys (or run without Telegram)  
+3. Install dependencies: `pip install -r requirements.txt`  
+4. Run `optimizer.py` to generate `optimized_params.json`  
+5. Start controller: `python controller.py`, supplying your list of pairs (follow pairs.json as an example) or supplying them as environment/config file  
 
 ---
 
-> **Note:** All mathematical logic has been manually reviewed. This project is for educational purposes only and is a proof of concept. It DEFINITELY CONTAINS bugs, mistakes and heuristic parameter choices.
+## Important Notes & Limitations
 
+- **Free-tier data only**: using IEX feed — data sparsity, latency, and incomplete quotes may cause mis-fills or missed signals.  
+- **Prototype stage**: This is an educational proof-of-concept. Risk controls, sizing, and model logic are simplified.   
+- **No guarantee for live trading** — treat this as a sandbox/backtest tool.  
+
+---
+
+## Disclaimer
+
+Use at your own risk.  
+It is intended for educational purposes and research.  
