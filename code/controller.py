@@ -15,7 +15,7 @@ with open(PAIRS_CONFIG_FILE, "r") as f:
 
 print(f"loaded {len(pairs)} pairs from config.")
 
-traderScript = "#trader.py"  # make sure the name is correct and debugs are not activated
+traderScript = "trader.py"  # make sure the name is correct and debugs are not activated
 delay = 10   # seconds between launching each trader
 
 def monitor(proc, asset_a, asset_b):
@@ -58,3 +58,4 @@ if __name__ == "__main__":
         print("keyboardinterrupt detected")
         for proc, _, _ in procs:
             proc.terminate()
+
