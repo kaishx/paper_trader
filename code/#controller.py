@@ -8,14 +8,14 @@ import os
 PAIRS_CONFIG_FILE = "pairs.json"
 
 if not os.path.exists(PAIRS_CONFIG_FILE):
-    raise FileNotFoundError(f"CRITICAL: {PAIRS_CONFIG_FILE} not found. Please create it.")
+    raise FileNotFoundError(f"!!! {PAIRS_CONFIG_FILE} not found. please create/import it !!!")
 
 with open(PAIRS_CONFIG_FILE, "r") as f:
     pairs = json.load(f)
 
-print(f"Loaded {len(pairs)} pairs from config.")
+print(f"loaded {len(pairs)} pairs from config.")
 
-traderScript = "#trader.py"  # make sure the name and debug (OFF) is correct. dont think you launched 20 of the non-tests ones, off the laptop then sleep lol
+traderScript = "#trader.py"  # make sure the name is correct and debugs are not activated
 delay = 10   # seconds between launching each trader
 
 def monitor(proc, asset_a, asset_b):
@@ -55,6 +55,6 @@ if __name__ == "__main__":
         while any(proc.poll() is None for proc, _, _ in procs):
             time.sleep(1)
     except KeyboardInterrupt:
-        print("KeyboardInterrupt detected. Terminating all traders...")
+        print("keyboardinterrupt detected")
         for proc, _, _ in procs:
             proc.terminate()
