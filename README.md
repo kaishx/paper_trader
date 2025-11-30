@@ -39,4 +39,4 @@ The design cleanly separates calibration (offline) from execution (live), enabli
 ## Disclaimer
 
 Use at your own risk.  
-It is intended for educational purposes and research.  
+This is intended for educational purposes and research.  
