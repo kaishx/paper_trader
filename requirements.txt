@@ -1,0 +1,1 @@
+pip install pandas numpy requests scipy statsmodels numba alpaca-py python-dotenv
