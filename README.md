@@ -12,9 +12,9 @@ The design cleanly separates calibration (offline) from execution (live), enabli
 
 ## Contents
 
-- `#controller` — launches and monitors multiple trader processes, spaced out to respect API rate limits.  
-- `#trader` — retrieves streaming data, calculates signals (beta, spread, z-score, volatility, Hurst/ADF), and executes trades (paper mode) on Alpaca.  
-- `#optimizer` — runs historical backtests and calibrates optimal entry/exit thresholds per pair, storing them in a JSON config used by live traders.
+- `controller` — launches and monitors multiple trader processes, spaced out to respect API rate limits.  
+- `trader` — retrieves streaming data, calculates signals (beta, spread, z-score, volatility, Hurst/ADF), and executes trades (paper mode) on Alpaca.  
+- `optimizer` — runs historical backtests and calibrates optimal entry/exit thresholds per pair, storing them in a JSON config used by live traders.
 
 ---
 
@@ -22,9 +22,9 @@ The design cleanly separates calibration (offline) from execution (live), enabli
 
 1. Clone the repo  
 2. Copy `.env.example` to `.env`, and fill in your Alpaca & Telegram API keys (or run without Telegram)  
-3. Install dependencies: `pip install pandas numpy requests scipy statsmodels numba alpaca-py python-dotenv`  
-4. Run `#optimizer.py` to generate `optimized_params.json`  
-5. Start controller: `python #controller.py`, supplying your list of pairs (follow pairs.json as an example) or supplying them as environment/config file  
+3. Install dependencies: `pip install pandas numpy requests scipy statsmodels numba alpaca-py python-dotenv` or with `pip install -r requirements.txt`  
+4. Run `optimizer.py` to generate `optimized_params.json`  
+5. Start controller: `python controller.py`, supplying your list of pairs (follow `pairs.json` as an example) or supplying them as environment/config file  
 
 ---
 
