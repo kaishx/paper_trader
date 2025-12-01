@@ -2,7 +2,7 @@
 
 This is a **pairs-trading system** that uses dynamic hedge ratios (via a Kalman filter) and mean-reversion signals (via Z-score + Hurst/ADF filters), built to run on the free tier of the Alpaca API (IEX feed + rate-limit / latency constraints).
 
-You may find the live paper account status (equity, entry/exit updates) here: [Telegram](https://t.me/+12M82bTPLAtjMzZl)
+You may find the live paper account status (equity, entry/exit updates) here: [**Telegram**](https://t.me/+12M82bTPLAtjMzZl)
 
 ---
 
