@@ -30,7 +30,7 @@ The design cleanly separates calibration (offline) from execution (live), enabli
 
 ---
 
-## What I learned / Technical skills used:
+## What I learnt
 
 - Time-series modeling (Kalman filter, Hurst, ADF), z-score mean-reversion signals
 - Real-time trading system design (execution, slippage handling, risk controls)
