@@ -30,7 +30,7 @@ The design cleanly separates calibration (offline) from execution (live), enabli
 
 ## Important Notes & Limitations
 
-- **Free-tier data only**: using IEX feed — data sparsity, latency, and incomplete quotes may cause mis-fills or missed signals.  
+- **Free-tier data only**: using IEX feed — data sparsity, latency, and incomplete quotes may cause mis-fills or missed signals. I highly recommend if that you can somehow get SIP data, please use it.
 - **Prototype stage**: This is an educational proof-of-concept. Risk controls, sizing, and model logic are simplified.   
 - **No guarantee for live trading** — treat this as a sandbox/backtest tool.  
 
