@@ -1,6 +1,6 @@
 # Pairs-Trading Engine (Paper Trading, Alpaca + IEX)
 
-This is a **pairs-trading system** that uses dynamic hedge ratios (via a Kalman filter) and mean-reversion signals (via Z-score + Hurst/ADF filters), built to run on the free tier of the Alpaca API (IEX feed + rate-limit / latency constraints).
+This is a fully automated **pairs-trading system** that uses dynamic hedge ratios (via a Kalman filter) and mean-reversion signals (via Z-score + Hurst/ADF filters) and executes hedged trades with risk controls, built to run on the free tier of the Alpaca API (IEX feed + rate-limit / latency constraints). 
 
 You may find the live paper account status (equity, entry/exit updates) here: [**Telegram**](https://t.me/+12M82bTPLAtjMzZl)
 
@@ -27,6 +27,16 @@ The design cleanly separates calibration (offline) from execution (live), enabli
 3. Install dependencies: `pip install pandas numpy requests scipy statsmodels numba alpaca-py python-dotenv` or with `pip install -r requirements.txt`  
 4. Run `optimizer.py` to generate `optimized_params.json`  
 5. Start controller: `python controller.py`, supplying your list of pairs (follow `pairs.json` as an example) or supplying them as environment/config file  
+
+---
+
+## What I learned / Technical skills used:
+
+- Time-series modeling (Kalman filter, Hurst, ADF), z-score mean-reversion signals
+- Real-time trading system design (execution, slippage handling, risk controls)
+- Backtesting + parameter optimization (entry/exit thresholds, Sharpe scoring)
+- Python (NumPy, Pandas, Statsmodels, Numba) and Alpaca Market/Trading APIs
+- Data engineering (RTH filtering, caching, log-price transforms, timezone handling)
 
 ---
 
