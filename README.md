@@ -6,7 +6,7 @@ This is a **pairs-trading system** that uses dynamic hedge ratios (via a Kalman 
 
 ## Architecture Overview
 
-![System Architecture](assets/designnew.png)
+![System Architecture](assets/designnew.png) 
 
 The design cleanly separates calibration (offline) from execution (live), enabling multiple pairs to trade concurrently while limiting API pressure.
 
