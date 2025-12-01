@@ -38,18 +38,17 @@ chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
 paper_setting = True
 
-# relaxed constraints for IEX data quality
 adf_env = os.getenv("adf_max")
 if adf_env:
     adf_max = float(adf_env)
 else:
-    adf_max = 0.40  # relaxed from 0.2
+    adf_max = 0.10
 
 hurst_env = os.getenv("hurstMax")
 if hurst_env:
     hurst_max = float(hurst_env)
 else:
-    hurst_max = 0.80  # relaxed from 0.75
+    hurst_max = 0.80
 
 if not all([API_KEY_ID, API_SECRET_KEY, bot_token, chat_id]):
     print("missing api keys. check the environment variables, make sure in same directory")
@@ -78,7 +77,7 @@ LOOKBACK_WINDOW = 390
 
 last_heartbeat_time = datetime.min.replace(tzinfo=timezone.utc)
 last_trade_time = datetime.min.replace(tzinfo=timezone.utc)
-cooldown_time = 300 # this is deprecated
+cooldown_time = 300  # this is deprecated
 
 data_client = StockHistoricalDataClient(API_KEY_ID, API_SECRET_KEY)
 trading_client = TradingClient(API_KEY_ID, API_SECRET_KEY, paper=paper_setting)
@@ -96,6 +95,7 @@ datacache = None
 
 def ensure_persistence_dir():
     os.makedirs(PERSISTENCE_DIR, exist_ok=True)
+
 
 def save_state():
     global entry_price_a, entry_price_b, entry_pos_type
@@ -213,9 +213,9 @@ def get_price(asset_a, asset_b):
             if sym in res:
                 q = res[sym]
 
-                # check for stale data (older than 15s is sussy on IEX)
-                if (now - q.timestamp).total_seconds() > 15:
-                    print(f"Quote stale for {sym} ({(now - q.timestamp).total_seconds()}s)")
+                # make sure data is not too stale. data can get sussy baka on IEX)
+                if (now - q.timestamp).total_seconds() > 120:
+                    print(f"Quote too stale for {sym} ({(now - q.timestamp).total_seconds()}s)")
                     return np.nan, np.nan
 
                 if q.ask_price > 0 and q.bid_price > 0:
@@ -264,7 +264,7 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
 
     if datacache is None:
         load_cache()
-        
+
     end_date = datetime.now(timezone.utc)
 
     if datacache is not None and not datacache.empty:
@@ -276,6 +276,9 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
         last_ts = datacache.index[-1]
         start_date = last_ts + timedelta(minutes=1)
         print(f"cache found, getting data from {start_date}")
+    else:
+        print("no cache found, performing cold fetch")
+        start_date = end_date - timedelta(days=60)
 
     try:
         series_a = get_hist(asset_a, start_date, end_date, timeframe)
@@ -295,8 +298,8 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
             if datacache is None:
                 datacache = new_data
             else:
-                datacache = pd.concat([datacache, new_data], axis=0).drop_duplicates(keep='last')
-                datacache.sort_index(inplace=True)
+                datacache = pd.concat([datacache, new_data], axis=0)
+                datacache = datacache[~datacache.index.duplicated(keep='last')]
 
             save_cache()
 
@@ -305,19 +308,23 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
             return None
 
         data = datacache.copy()
+
+        if data.index.tz is None:
+            data.index = data.index.tz_localize('UTC')
+
         data_est = data.tz_convert('US/Eastern')
 
         # RTH Filter
         rth_filter = ((data_est.index.hour > 9) | ((data_est.index.hour == 9) & (data_est.index.minute >= 30))) & (
-                    data_est.index.hour < 16)
+                data_est.index.hour < 16)
         data = data[rth_filter]
 
-        MAX_BARS_TO_KEEP = 60 * 24 * 60
+        MAX_BARS_TO_KEEP = 4 * 24 * 60
         if len(data) > MAX_BARS_TO_KEEP:
             data = data.iloc[-MAX_BARS_TO_KEEP:]
             datacache = data.copy()
 
-        data = data.iloc[-(lookback + 50):].copy()
+        data = data.iloc[-(lookback + 200):].copy()
 
         if data.empty or len(data) < lookback:
             print(f"!!! Warning! only {len(data)} bars after filtering. Need {lookback}")
@@ -329,13 +336,14 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
         return data
 
     except Exception as e:
-        print(f"dataFilter() error: {e}")   
+        print(f"dataFilter() error: {e}")
         return None
+
 
 
 @njit
 def calc_kalman(y, x, delta=1e-4, ve=1e-3):
-    # not exactly 100% on top of the math, just tried to follow this https://www.bzarg.com/p/how-a-kalman-filter-works-in-pictures/ and other similar ones
+    # nottt exactly 100% on top of the math, just tried to follow this https://www.bzarg.com/p/how-a-kalman-filter-works-in-pictures/ and other similar ones
     n = len(y)
     beta = np.zeros(n)
     state_mean = 0.0
@@ -398,14 +406,16 @@ def calc_signal(data):
 
     spread_tail = data['Spread'].iloc[-z_window:].dropna()
 
-    if len(spread_tail) < 30: return latest_beta, 0, 0, 0, 1.0, 0.5
+    history = data['Spread'].iloc[-(z_window + 1):-1]
 
-    mean = spread_tail.mean()
-    std = spread_tail.std()
-    latest_spread = spread_tail.iloc[-1]
-    hurst_val = calc_hurst(data['Spread'].values)[-1]
+    if len(history) < 30: return latest_beta, 0, 0, 0, 1.0, 0.5
+
+    mean = history.mean()
+    std = history.std()
+    latest_spread = data['Spread'].iloc[-1]
 
     z_score = (latest_spread - mean) / (std + 1e-9)
+    hurst_val = calc_hurst(data['Spread'].values)[-1]
 
     try:
         adf_p = adfuller(spread_tail, autolag='AIC')[1]
@@ -426,7 +436,7 @@ def determine_sizing(asset_a_price, asset_b_price, beta, spread_volatility):
     V_Total = assigned_cptl * vol_scale
 
     b = abs(beta)
-    if b == 0: b = 1.0 # PREVENT div by 0 here
+    if b == 0: b = 1.0  # PREVENT div by 0 here
 
     V_A = V_Total * (b / (1.0 + b))
     V_B = V_Total - V_A
@@ -435,6 +445,33 @@ def determine_sizing(asset_a_price, asset_b_price, beta, spread_volatility):
     qty_b = int(math.floor(V_B / asset_b_price))
 
     return qty_a, qty_b, V_A, V_B
+
+
+def getCurrentPos(asset_a, asset_b):
+    try:
+        positions = trading_client.get_all_positions()
+        pos_a = 0
+        pos_b = 0
+
+        for p in positions:
+            if p.symbol == asset_a:
+                pos_a = float(p.qty)
+            elif p.symbol == asset_b:
+                pos_b = float(p.qty)
+
+        if pos_a == 0 and pos_b == 0:
+            return 0, 0, 0
+
+        if (pos_a > 0 and pos_b < 0):
+            return 1, pos_a, pos_b
+        elif (pos_a < 0 and pos_b > 0):
+            return -1, pos_a, pos_b
+
+        return 999, pos_a, pos_b
+
+    except Exception as e:
+        print(f"!!! getCurrentPos failed: {e} !!!")
+        return 0, 0, 0
 
 
 def submit_order(symbol, qty, side, limit_price=None, order_type='LIMIT'):
@@ -471,38 +508,46 @@ def submit_order(symbol, qty, side, limit_price=None, order_type='LIMIT'):
         return False, 0, None, 0
 
 
-def enter_pair_atomic(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPriceA, lastPriceB, entry_type):
-    # changed this logic to be hybrid limit-market to enusre that it gets filled most of the time
+def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPriceA, lastPriceB, entry_type):
     global last_trade_time, entry_pos_type, entry_price_a, entry_price_b
 
     side_a = OrderSide.BUY if entry_type == "in_long" else OrderSide.SELL
     side_b = OrderSide.SELL if entry_type == "in_long" else OrderSide.BUY
 
-    print("Attempting entry")
+    print(f"Attempting entry: Target A={qty_a}, B={qty_b}")
 
-    success_a, filled_a, _, avg_a = submit_order(ASSET_A, qty_a, side_a, limit_price=lastPriceA, order_type='LIMIT')
+    success_a, filled_a, id_a, avg_a = submit_order(ASSET_A, qty_a, side_a, limit_price=lastPriceA, order_type='LIMIT')
 
-    if not success_a or filled_a == 0:
-        print("!!! leg A failed/timed out. aborting. !!!")
+    if filled_a == 0:
+        print("!!! buying of leg A failed completely (0 filled). Aborting. !!!")
         return False
 
-    print(f"Leg A filled ({filled_a}). Firing leg B Market...")
-    success_b, filled_b, _, avg_b = submit_order(ASSET_B, qty_b, side_b, order_type='MARKET')
+    # calculate B if A somehow only partially fills
+    fill_ratio = filled_a / qty_a
+    qty_b_adjusted = int(math.floor(qty_b * fill_ratio))
+
+    if qty_b_adjusted == 0 and filled_a > 0:
+        qty_b_adjusted = 1
+
+    print(f"Leg A filled ({filled_a}). Adjusting Leg B to {qty_b_adjusted} (Ratio: {fill_ratio:.2f})...")
+
+    success_b, filled_b, _, avg_b = submit_order(ASSET_B, qty_b_adjusted, side_b, order_type='MARKET')
 
     if not success_b or filled_b == 0:
         print("!!! Leg B Market Order Failed. Rolling back Leg A. !!!")
-        send_tele(f"order fail: {ASSET_A} filled, {ASSET_B} failed. Rolling back.", "ERROR")
+        send_tele(f"order fail: {ASSET_A} filled {filled_a}, {ASSET_B} failed. Rolling back.", "ERROR")
+        # Rollback A
         rb_side = OrderSide.SELL if side_a == OrderSide.BUY else OrderSide.BUY
         submit_order(ASSET_A, int(filled_a), rb_side, order_type='MARKET')
         return False
 
-    print("entry done")
+    print("Entry done")
     entry_price_a = avg_a
     entry_price_b = avg_b
     entry_pos_type = entry_type
     save_state()
 
-    msg = f"entered {entry_type}\n{ASSET_A}: {filled_a} @ {avg_a:.2f}\n{ASSET_B}: {filled_b} @ {avg_b:.2f}\nZ: {current_z:.2f}"
+    msg = f"Entered {entry_type}\n{ASSET_A}: {filled_a} @ {avg_a:.2f}\n{ASSET_B}: {filled_b} @ {avg_b:.2f}\nZ: {current_z:.2f}"
     send_tele(msg, "ENTRY")
     last_trade_time = datetime.now(timezone.utc)
     return True
@@ -515,27 +560,52 @@ def liquidate(reason="No reason provided"):
 
     _, qty_a, qty_b = getCurrentPos(ASSET_A, ASSET_B)
 
+    avg_exit_a = 0
+    avg_exit_b = 0
+
     if qty_a != 0:
         side = OrderSide.SELL if qty_a > 0 else OrderSide.BUY
-        submit_order(ASSET_A, int(abs(qty_a)), side, order_type='MARKET')
+        _, _, _, avg_exit_a = submit_order(ASSET_A, int(abs(qty_a)), side, order_type='MARKET')
 
     if qty_b != 0:
         side = OrderSide.SELL if qty_b > 0 else OrderSide.BUY
-        submit_order(ASSET_B, int(abs(qty_b)), side, order_type='MARKET')
+        _, _, _, avg_exit_b = submit_order(ASSET_B, int(abs(qty_b)), side, order_type='MARKET')
 
-    send_tele(f"Liquidated {ASSET_A}/{ASSET_B} due to {reason}", "EXIT")
+    pnl = 0.0
+    if entry_price_a and entry_price_b:
+        if qty_a > 0:
+            pnl += qty_a * (avg_exit_a - entry_price_a)
+        elif qty_a < 0:
+            pnl += abs(qty_a) * (entry_price_a - avg_exit_a)
+
+        if qty_b > 0:
+            pnl += qty_b * (avg_exit_b - entry_price_b)
+        elif qty_b < 0:
+            pnl += abs(qty_b) * (entry_price_b - avg_exit_b)
+
+    send_tele(f"Liquidated {ASSET_A}/{ASSET_B} due to {reason}\nRealized PnL: ${pnl:.2f}", "EXIT")
     clear_state()
 
 
 def statusupdate(current_z, beta, p_value, hurst, price_a, price_b, position, pos_a, pos_b, acc_eqty, loop_start_time,
-               is_rth):
+                 is_rth):
     global last_heartbeat_time
     print(
-        f"{loop_start_time.strftime('%H:%M')} | Z:{current_z:.2f} | ADF:{p_value:.2f} | H:{hurst:.2f} | {ASSET_A}:${price_a:.2f} {ASSET_B}:${price_b:.2f}")
+        f"{loop_start_time.strftime('%H:%M')} | Z:{current_z:.3f} | ADF:{p_value:.3f} | H:{hurst:.3f} | {ASSET_A}:${price_a:.2f} {ASSET_B}:${price_b:.2f}")
 
     if is_rth and (datetime.now(timezone.utc) - last_heartbeat_time).total_seconds() >= tele_interval:
-        msg = f"Z: {current_z:.2f} | ADF: {p_value:.2f}\nPos: {pos_a}/{pos_b}"
+        status_text = "OPEN (RTH)" if is_rth else "CLOSED"
+
+        msg = (
+            f"| Trading Status Market: {status_text} |\n"
+            f"Z-Score: {current_z:.4f} | Hurst: {hurst:.4f} | ADF P: {p_value:.4f}\n"
+            f"Prices: {ASSET_A} ${price_a:.2f}, {ASSET_B} ${price_b:.2f}\n"
+            f"Current Position: {position} ({ASSET_A}: {pos_a} shares, {ASSET_B}: {pos_b} shares)\n"
+            f"Equity: ${acc_eqty:,.2f}"
+        )
+
         send_tele(msg, "INFO")
+
         last_heartbeat_time = datetime.now(timezone.utc)
 
 
@@ -550,10 +620,6 @@ def liveLoop():
 
     while True:
         try:
-            if (datetime.now(timezone.utc) - last_trade_time).total_seconds() < cooldown_time:
-                time.sleep(60);
-                continue
-
             try:
                 clock = trading_client.get_clock()
                 if not clock.is_open:
@@ -576,6 +642,19 @@ def liveLoop():
                 continue
 
             position, pos_a, pos_b = getCurrentPos(ASSET_A, ASSET_B)
+
+            if position != 0 and entry_pos_type is None:
+                print("! State desync detected (Position exists but memory empty). Inferring state...")
+                # Infer direction based on Leg A (Asset A)
+                if pos_a > 0:
+                    entry_pos_type = "in_long"
+                else:
+                    entry_pos_type = "in_short"
+
+                # Prevent crashes in PnL calc by using current price as fallback for entry
+                if entry_price_a is None: entry_price_a = pa
+                if entry_price_b is None: entry_price_b = pb
+
             if position == 999:
                 print("!!! orphan detected. stopping trader for 10m. Please manually fix. !!!");
                 send_tele("ORPHAN", "ERROR");
@@ -584,7 +663,7 @@ def liveLoop():
 
             acct = trading_client.get_account()
             statusupdate(z_score, beta, p_value, hurst, pa, pb, position, pos_a, pos_b, float(acct.equity),
-                       datetime.now(), True)
+                         datetime.now(), True)
 
             if p_value > adf_max:
                 bad_regime_counter += 1
@@ -600,7 +679,7 @@ def liveLoop():
                         qa, qb, _, _ = determine_sizing(pa, pb, beta, spread_vol)
                         if qa > 0 and qb > 0:
                             etype = "in_long" if z_score < 0 else "in_short"
-                            enter_pair_atomic(qa, qb, z_score, beta, hurst, spread_vol, pa, pb, etype)
+                            enter_pair(qa, qb, z_score, beta, hurst, spread_vol, pa, pb, etype)
 
             time.sleep(trade_interval)
 
@@ -608,7 +687,8 @@ def liveLoop():
             print(f"!!! Crash: {e}!!! ")
             traceback.print_exc()
             send_tele(f"Crash: {e}", "ERROR")
-            time.sleep(60)
+            time.sleep(600)
+
 
 if __name__ == "__main__":
     liveLoop()

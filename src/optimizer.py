@@ -37,13 +37,13 @@ slippagefee = 0.01
 hurst_env = os.getenv("hurstMax")
 hurstMax = float(hurst_env) if hurst_env else 0.80
 
-minTrades = 15
+minTrades = 5
 
 Z_ENTRY_GRID = [1.7, 1.9, 2.1, 2.3, 2.5]
 Z_EXIT_GRID = [0.1, 0.3, 0.5, 0.7, 0.9, 1.1]
 Z_STOP_LOSS_GRID = [3.0, 3.3, 3.6, 3.9, 4.2, 4.5]
 
-LOOKBACK_DAYS = 365
+LOOKBACK_DAYS = 100
 START_DATE = datetime.now() - timedelta(days=LOOKBACK_DAYS)
 END_DATE = datetime.now() - timedelta(days=1)
 
@@ -75,17 +75,22 @@ def calc_hurst(series, window=100):
     n = len(series)
     hurst = np.full(n, 0.5)
     min_window = max(window, 30)
+
     for t in range(min_window, n):
-        ts = series[t - window:t]
-        mean_ts = np.mean(ts)
-        centered = ts - mean_ts
-        cumulative = np.cumsum(centered)
-        R = np.max(cumulative) - np.min(cumulative)
-        S = np.std(ts)
-        if S == 0:
+        start = max(0, t - window)
+        ts = series[start:t]
+        if len(ts) < 10: continue
+
+        m = np.mean(ts)
+        cum_dev = np.cumsum(ts - m)
+        r = np.max(cum_dev) - np.min(cum_dev)
+        s = np.std(ts)
+
+        if s == 0 or r == 0 or len(ts) < 2:
             hurst[t] = 0.5
         else:
-            hurst[t] = np.log(R / S) / np.log(len(ts))
+            hurst[t] = np.log(r / s) / np.log(len(ts))
+
     return hurst
 
 
@@ -101,9 +106,9 @@ def calc_spread_z(data, lookback=390):
 
     data['Spread'] = data['Log_A'] - (data['Alpha'] + data['Beta'] * data['Log_B'])
 
-    rolling_mean_spread = data['Spread'].rolling(window=lookback).mean()
-    rolling_std_spread = data['Spread'].rolling(window=lookback).std()
-
+    rolling_mean_spread = data['Spread'].shift(1).rolling(window=lookback).mean()
+    rolling_std_spread = data['Spread'].shift(1).rolling(window=lookback).std()
+    
     data['Spread_Std'] = rolling_std_spread
 
     data['Z_Score'] = (data['Spread'] - rolling_mean_spread) / (rolling_std_spread + 1e-9)
@@ -149,6 +154,10 @@ def backtest(close_a, close_b, z_score, hurst, beta, spread_std,
         current_vol = spread_std[i]
 
         prev_position = position
+
+        current_price_a = close_a[i]
+        current_price_b = close_b[i]
+
         next_price_a = close_a[i + 1]
         next_price_b = close_b[i + 1]
 
@@ -177,7 +186,7 @@ def backtest(close_a, close_b, z_score, hurst, beta, spread_std,
                 position = 0.0
 
         elif prev_position == 0 and not is_final_bar:
-            if np.abs(current_z) >= z_entry and current_hurst < hurst_thresh:
+            if np.abs(current_z) > z_entry and current_hurst < hurst_thresh:
 
                 vol_scale = 1.0
                 if current_vol > 0:
@@ -192,9 +201,8 @@ def backtest(close_a, close_b, z_score, hurst, beta, spread_std,
                 val_b = adj_capital / (1.0 + b_abs)
                 val_a = adj_capital - val_b
 
-                n_A = val_a / next_price_a
-                n_B = val_b / next_price_b
-
+                n_A = np.floor(val_a / current_price_a)
+                n_B = np.floor(val_b / current_price_b)
 
                 entry_price_a = next_price_a
                 entry_price_b = next_price_b
@@ -236,8 +244,9 @@ def getBestParams(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
 
     current_p_value = checkADF(df)
     print(f"Current ADF p-value: {current_p_value:.4f} (Recorded, not filtered)")
-
-    opt_start_idx = max(0, len(df) - int(120 * 26))
+    # the amount of days this optimzier "optimizes" on is not selected for any great reason, but its like 4x the lookbackwindow of the trader at least.
+    # i think its a decent responsive window for optimizing the best params
+    opt_start_idx = max(0, len(df) - int(60 * 26))
     opt_df = df.iloc[opt_start_idx:].copy()
 
     if len(opt_df) < 100:

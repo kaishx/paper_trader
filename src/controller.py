@@ -35,7 +35,7 @@ def start(pairs_list):
             stderr=subprocess.PIPE,
             bufsize=1,
             text=True,
-            encoding="utf-8",  # explicitly force utf8
+            encoding="utf-8",  # explicitly force utf8 so i can prevent some crashes in the logs
             errors="replace"  # prevnt crashes on some characters so the thing keeps running properly
         )
         processes.append((proc, asset_a, asset_b))
@@ -58,4 +58,3 @@ if __name__ == "__main__":
         print("keyboardinterrupt detected")
         for proc, _, _ in procs:
             proc.terminate()
-
