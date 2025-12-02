@@ -15,7 +15,7 @@ import pickle
 import traceback
 from numba import njit
 
-# alpaca imports, gotta be careful with how its named in documentation
+# be careful with how its named in documentation, CHECK THE API DOCUMENTATION AGAIN
 from alpaca.data import StockHistoricalDataClient, TimeFrame, TimeFrameUnit
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.enums import DataFeed
@@ -77,7 +77,7 @@ LOOKBACK_WINDOW = 390
 
 last_heartbeat_time = datetime.min.replace(tzinfo=timezone.utc)
 last_trade_time = datetime.min.replace(tzinfo=timezone.utc)
-cooldown_time = 300  # this is deprecated
+cooldown_time = 300  # i think this is deprecated
 
 data_client = StockHistoricalDataClient(API_KEY_ID, API_SECRET_KEY)
 trading_client = TradingClient(API_KEY_ID, API_SECRET_KEY, paper=paper_setting)
@@ -522,7 +522,7 @@ def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPric
         print("!!! buying of leg A failed completely (0 filled). Aborting. !!!")
         return False
 
-    # calculate B if A somehow only partially fills
+    # calculate B if A somehow only partially fills. but shouldnt if what i read on alpaca api docs is correct
     fill_ratio = filled_a / qty_a
     qty_b_adjusted = int(math.floor(qty_b * fill_ratio))
 
@@ -536,7 +536,6 @@ def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPric
     if not success_b or filled_b == 0:
         print("!!! Leg B Market Order Failed. Rolling back Leg A. !!!")
         send_tele(f"order fail: {ASSET_A} filled {filled_a}, {ASSET_B} failed. Rolling back.", "ERROR")
-        # Rollback A
         rb_side = OrderSide.SELL if side_a == OrderSide.BUY else OrderSide.BUY
         submit_order(ASSET_A, int(filled_a), rb_side, order_type='MARKET')
         return False
@@ -591,7 +590,7 @@ def statusupdate(current_z, beta, p_value, hurst, price_a, price_b, position, po
                  is_rth):
     global last_heartbeat_time
     print(
-        f"{loop_start_time.strftime('%H:%M')} | Z:{current_z:.3f} | ADF:{p_value:.3f} | H:{hurst:.3f} | {ASSET_A}:${price_a:.2f} {ASSET_B}:${price_b:.2f}")
+        f"{loop_start_time.strftime('%H:%M')} | Z:{current_z:.3f} | ADF:{p_value:.3f} | H:{hurst:.3f} | {ASSET_A}:${price_a:.2f} {ASSET_B}:${price_b:.2f} | Eqty: ${acc_eqty:,.2f}")
 
     if is_rth and (datetime.now(timezone.utc) - last_heartbeat_time).total_seconds() >= tele_interval:
         status_text = "OPEN (RTH)" if is_rth else "CLOSED"
@@ -618,16 +617,39 @@ def liveLoop():
     print(f"started running. ADF<{adf_max}, Hurst<{hurst_max}")
     bad_regime_counter = 0
 
+    global last_trade_time, entry_pos_type, entry_price_a, entry_price_b, last_heartbeat_time
+
+    if not load_param(): return
+    ensure_persistence_dir()
+    load_state()
+
+    print(f"started running. ADF<{adf_max}, Hurst<{hurst_max}")
+    bad_regime_counter = 0
+
     while True:
         try:
+            acct = trading_client.get_account()
+            acc_eqty = float(acct.equity)
+
             try:
                 clock = trading_client.get_clock()
                 if not clock.is_open:
-                    print("Market is closed");
+                    current_time = datetime.now(timezone.utc)
+
+                    if (current_time - last_heartbeat_time).total_seconds() >= tele_interval:
+                        msg = (
+                            f"| Market is CLOSED |\n"
+                            f"Equity: ${acc_eqty:,.2f}\n"
+                            f"Trader: {ASSET_A}/{ASSET_B}"
+                        )
+                        send_tele(msg, "INFO")
+                        last_heartbeat_time = current_time
+
+                    print(f"| Market is Closed | Equity: ${acc_eqty:,.2f}");
                     time.sleep(sleepSeconds);
                     continue
-            except:
-                pass
+            except Exception as e:
+                print(f"!!! Clock check error: {e} !!!")
 
             latest_data = dataFilter(ASSET_A, ASSET_B, LOOKBACK_WINDOW)
             if latest_data is None:
@@ -645,13 +667,11 @@ def liveLoop():
 
             if position != 0 and entry_pos_type is None:
                 print("! State desync detected (Position exists but memory empty). Inferring state...")
-                # Infer direction based on Leg A (Asset A)
                 if pos_a > 0:
                     entry_pos_type = "in_long"
                 else:
                     entry_pos_type = "in_short"
 
-                # Prevent crashes in PnL calc by using current price as fallback for entry
                 if entry_price_a is None: entry_price_a = pa
                 if entry_price_b is None: entry_price_b = pb
 
@@ -661,7 +681,6 @@ def liveLoop():
                 time.sleep(600);
                 continue
 
-            acct = trading_client.get_account()
             statusupdate(z_score, beta, p_value, hurst, pa, pb, position, pos_a, pos_b, float(acct.equity),
                          datetime.now(), True)
 
