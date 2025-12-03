@@ -42,7 +42,7 @@ adf_env = os.getenv("adf_max")
 if adf_env:
     adf_max = float(adf_env)
 else:
-    adf_max = 0.10
+    adf_max = 0.20
 
 hurst_env = os.getenv("hurstMax")
 if hurst_env:
@@ -69,11 +69,13 @@ trade_interval = 90
 sleepSeconds = 180
 tele_interval = 180
 assigned_cptl = 100000  # probably need to check literature for recommended allocation for capital in relation to total capital
+ABS_DOLLAR_STOP = 2500.0
 
 Z_ENTRY = 2.3
 Z_EXIT = 0.1
 Z_STOP_LOSS = 4.5
-LOOKBACK_WINDOW = 390
+LOAD_LOOKBACK = 1560 # 60 days * 26 bars
+CALC_WINDOW = 390
 
 last_heartbeat_time = datetime.min.replace(tzinfo=timezone.utc)
 last_trade_time = datetime.min.replace(tzinfo=timezone.utc)
@@ -177,7 +179,10 @@ def send_tele(message, alert_type="INFO"):
 
 
 def load_param(file_path='optimized_params.json'):
-    global Z_ENTRY, Z_EXIT, Z_STOP_LOSS, LOOKBACK_WINDOW
+    global Z_ENTRY, Z_EXIT, Z_STOP_LOSS, LOAD_LOOKBACK, OPTIMIZER_ADF_P, OPTIMIZER_TRADABLE
+
+    OPTIMIZER_ADF_P = None
+    OPTIMIZER_TRADABLE = True
 
     try:
         with open(file_path, 'r') as f:
@@ -186,16 +191,23 @@ def load_param(file_path='optimized_params.json'):
         print(f"!!! Error loading/parsing parameters file: {e} !!!")
         return False
 
-    LOOKBACK_WINDOW = params.get('metadata', {}).get('rolling_window_bars', 390)
+    LOAD_LOOKBACK = params.get('metadata', {}).get('rolling_window_bars', LOAD_LOOKBACK)
     key = f"{ASSET_A}/{ASSET_B}"
 
     if key in params:
         Z_ENTRY = params[key]["z_entry"]
         Z_EXIT = params[key]["z_exit"]
         Z_STOP_LOSS = params[key]["z_sl"]
-        print(f"! loaded optimized parameters: Z={Z_ENTRY}, Exit={Z_EXIT}, SL={Z_STOP_LOSS}")
+        OPTIMIZER_ADF_P = params[key].get("adf_p_value", None)
+        if OPTIMIZER_ADF_P is not None:
+            OPTIMIZER_TRADABLE = (OPTIMIZER_ADF_P <= adf_max)
+        else:
+            OPTIMIZER_TRADABLE = True
+
+        print(f"! loaded optimized parameters: Z={Z_ENTRY}, Exit={Z_EXIT}, SL={Z_STOP_LOSS} | opt_adf={OPTIMIZER_ADF_P}")
         return True
     else:
+        print(f"params missing for {key} in {file_path}")
         return False
 
 
@@ -237,6 +249,9 @@ def get_price(asset_a, asset_b):
 
     return float(price_map[asset_a]), float(price_map[asset_b])
 
+def get_live_price():
+    # just a wrapper
+    return get_price(ASSET_A, ASSET_B)
 
 def get_hist(symbol, start_date, end_date, timeframe):
     try:
@@ -278,7 +293,7 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
         print(f"cache found, getting data from {start_date}")
     else:
         print("no cache found, performing cold fetch")
-        start_date = end_date - timedelta(days=60)
+        start_date = end_date - timedelta(days=120)
 
     try:
         series_a = get_hist(asset_a, start_date, end_date, timeframe)
@@ -320,11 +335,13 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
         data = data[rth_filter]
 
         MAX_BARS_TO_KEEP = 4 * 24 * 60
-        if len(data) > MAX_BARS_TO_KEEP:
-            data = data.iloc[-MAX_BARS_TO_KEEP:]
+        if len(data) > lookback:
+            data = data.iloc[-lookback:]
             datacache = data.copy()
 
-        data = data.iloc[-(lookback + 200):].copy()
+        if data.empty or len(data) < lookback:
+            print(f"!!! Warning! only {len(data)} bars. Need {lookback}")
+            return None
 
         if data.empty or len(data) < lookback:
             print(f"!!! Warning! only {len(data)} bars after filtering. Need {lookback}")
@@ -389,40 +406,37 @@ def calc_hurst(series, window=100):
 
 
 def calc_signal(data):
-    z_window = 390
+    data['Log_A'] = np.log(data[f'Close_{ASSET_A}'])
+    data['Log_B'] = np.log(data[f'Close_{ASSET_B}'])
 
     Y = data['Log_A'].values
     X = data['Log_B'].values
-    beta_series = calc_kalman(Y, X)
 
-    latest_beta = beta_series[-1]
-    data['Kalman_Beta'] = beta_series
+    data['Beta'] = calc_kalman(Y, X)
 
-    rolling_mean_Y = data['Log_A'].rolling(window=z_window).mean()
-    rolling_mean_X = data['Log_B'].rolling(window=z_window).mean()
+    data['Alpha'] = data['Log_A'].rolling(CALC_WINDOW).mean() - data['Beta'] * data['Log_B'].rolling(CALC_WINDOW).mean()
+    data['Spread'] = data['Log_A'] - (data['Alpha'] + data['Beta'] * data['Log_B'])
 
-    data['Alpha'] = rolling_mean_Y - data['Kalman_Beta'] * rolling_mean_X
-    data['Spread'] = data['Log_A'] - (data['Alpha'] + data['Kalman_Beta'] * data['Log_B'])
+    spread_mean = data['Spread'].shift(1).rolling(CALC_WINDOW).mean()
+    spread_std = data['Spread'].shift(1).rolling(CALC_WINDOW).std()
 
-    spread_tail = data['Spread'].iloc[-z_window:].dropna()
-
-    history = data['Spread'].iloc[-(z_window + 1):-1]
-
-    if len(history) < 30: return latest_beta, 0, 0, 0, 1.0, 0.5
-
-    mean = history.mean()
-    std = history.std()
-    latest_spread = data['Spread'].iloc[-1]
-
-    z_score = (latest_spread - mean) / (std + 1e-9)
-    hurst_val = calc_hurst(data['Spread'].values)[-1]
+    data['Z_Score'] = (data['Spread'] - spread_mean) / (spread_std + 1e-9)
+    data['Hurst'] = calc_hurst(data['Spread'].values)
 
     try:
-        adf_p = adfuller(spread_tail, autolag='AIC')[1]
-    except:
+        import statsmodels.api as sm
+        Y = data['Log_A'].astype(float)
+        X = data['Log_B'].astype(float)
+        Xc = sm.add_constant(X)
+        model = sm.OLS(Y, Xc).fit()
+        resid = model.resid
+        adf_p = float(adfuller(resid)[1])
+    except Exception as e:
+        print(f"warning: ADF calc failed: {e}")
         adf_p = 1.0
 
-    return latest_beta, z_score, std, latest_spread, adf_p, hurst_val
+    last = data.iloc[-1]
+    return last['Beta'], last['Z_Score'], spread_std.iloc[-1], adf_p, last['Hurst']
 
 
 def determine_sizing(asset_a_price, asset_b_price, beta, spread_volatility):
@@ -506,7 +520,6 @@ def submit_order(symbol, qty, side, limit_price=None, order_type='LIMIT'):
     except Exception as e:
         print(f"!!! order failed: {e}!!!")
         return False, 0, None, 0
-
 
 def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPriceA, lastPriceB, entry_type):
     global last_trade_time, entry_pos_type, entry_price_a, entry_price_b
@@ -608,106 +621,97 @@ def statusupdate(current_z, beta, p_value, hurst, price_a, price_b, position, po
         last_heartbeat_time = datetime.now(timezone.utc)
 
 
-def liveLoop():
-    global last_trade_time, entry_pos_type, entry_price_a, entry_price_b
-    if not load_param(): return
+def live_loop():
+    global entry_price_a, entry_price_b, entry_pos_type
     ensure_persistence_dir()
     load_state()
 
-    print(f"started running. ADF<{adf_max}, Hurst<{hurst_max}")
-    bad_regime_counter = 0
-
-    global last_trade_time, entry_pos_type, entry_price_a, entry_price_b, last_heartbeat_time
-
-    if not load_param(): return
-    ensure_persistence_dir()
-    load_state()
-
-    print(f"started running. ADF<{adf_max}, Hurst<{hurst_max}")
-    bad_regime_counter = 0
+    print(f"Trader starting... awaiting params for {ASSET_A}/{ASSET_B}")
 
     while True:
         try:
-            acct = trading_client.get_account()
-            acc_eqty = float(acct.equity)
+            if not load_param():
+                print("Parameters not found. Sleeping...")
+                time.sleep(300);
+                continue
+
+            if not OPTIMIZER_TRADABLE:
+                print(f"Pair {ASSET_A}/{ASSET_B} non-stationary (p={OPTIMIZER_ADF_P}). Sleeping 1 hour.")
+                time.sleep(3600);
+                continue
+
+            df = dataFilter(ASSET_A, ASSET_B, LOAD_LOOKBACK)
+            if df is None or len(df) < 500:
+                print("Waiting for data buffer...");
+                time.sleep(60);
+                continue
+
+            beta, z_score, vol, adf_p, hurst = calc_signal(df.copy())
+            pa, pb = get_live_price()
+            if pa == 0 or pb == 0: continue
+
+            pos = trading_client.get_all_positions()
+            qa = next((float(p.qty) for p in pos if p.symbol == ASSET_A), 0)
+            qb = next((float(p.qty) for p in pos if p.symbol == ASSET_B), 0)
 
             try:
-                clock = trading_client.get_clock()
-                if not clock.is_open:
-                    current_time = datetime.now(timezone.utc)
+                acc_eqty = float(trading_client.get_account().equity)
+            except:
+                acc_eqty = 0.0
 
-                    if (current_time - last_heartbeat_time).total_seconds() >= tele_interval:
-                        msg = (
-                            f"| Market is CLOSED |\n"
-                            f"Equity: ${acc_eqty:,.2f}\n"
-                            f"Trader: {ASSET_A}/{ASSET_B}"
-                        )
-                        send_tele(msg, "INFO")
-                        last_heartbeat_time = current_time
+            if abs(qa) > 0 and entry_price_a is None:
+                entry_price_a = pa;
+                entry_price_b = pb
 
-                    print(f"| Market is Closed | Equity: ${acc_eqty:,.2f}");
-                    time.sleep(sleepSeconds);
-                    continue
-            except Exception as e:
-                print(f"!!! Clock check error: {e} !!!")
+            unrealized_pnl = 0.0
+            if abs(qa) > 0 and entry_price_a:
+                val_a = (pa - entry_price_a) * abs(qa) if qa > 0 else (entry_price_a - pa) * abs(qa)
+                val_b = (pb - entry_price_b) * abs(qb) if qb > 0 else (entry_price_b - pb) * abs(qb)
+                unrealized_pnl = val_a + val_b
 
-            latest_data = dataFilter(ASSET_A, ASSET_B, LOOKBACK_WINDOW)
-            if latest_data is None:
-                time.sleep(trade_interval);
-                continue
+            status_msg = f"Z:{z_score:.2f} | PnL:${unrealized_pnl:.1f} | ADF(Monitor):{adf_p:.2f}"
+            print(status_msg)
 
-            beta, z_score, spread_vol, _, p_value, hurst = calc_signal(latest_data)
+            pos_str = "LONG" if qa > 0 else "SHORT" if qa < 0 else "FLAT"
+            statusupdate(z_score, beta, adf_p, hurst, pa, pb, pos_str, qa, qb, acc_eqty, datetime.now(timezone.utc),
+                         True)
 
-            pa, pb = get_price(ASSET_A, ASSET_B)
-            if np.isnan(pa):
-                time.sleep(10);
-                continue
+            if abs(qa) > 0:
+                if unrealized_pnl < -ABS_DOLLAR_STOP:
+                    print("!!! DOLLAR STOP TRIGGERED !!!")
+                    liquidate("DOLLAR STOP") 
 
-            position, pos_a, pos_b = getCurrentPos(ASSET_A, ASSET_B)
+                elif abs(z_score) > Z_STOP_LOSS:
+                    print("!!! Z STOP TRIGGERED !!!")
+                    liquidate("Z-SCORE STOP") 
 
-            if position != 0 and entry_pos_type is None:
-                print("! State desync detected (Position exists but memory empty). Inferring state...")
-                if pos_a > 0:
-                    entry_pos_type = "in_long"
-                else:
-                    entry_pos_type = "in_short"
+                elif abs(z_score) < Z_EXIT:
+                    print("!!! TARGET EXIT !!!")
+                    liquidate("TARGET EXIT") 
 
-                if entry_price_a is None: entry_price_a = pa
-                if entry_price_b is None: entry_price_b = pb
-
-            if position == 999:
-                print("!!! orphan detected. stopping trader for 10m. Please manually fix. !!!");
-                send_tele("ORPHAN", "ERROR");
-                time.sleep(600);
-                continue
-
-            statusupdate(z_score, beta, p_value, hurst, pa, pb, position, pos_a, pos_b, float(acct.equity),
-                         datetime.now(), True)
-
-            if p_value > adf_max:
-                bad_regime_counter += 1
-                if bad_regime_counter >= 5 and position != 0:
-                    liquidate("Regime Shift")
             else:
-                bad_regime_counter = 0
-                if position != 0:
-                    if abs(z_score) <= Z_EXIT or abs(z_score) >= Z_STOP_LOSS:
-                        liquidate(f"Exit Z={z_score:.2f}")
-                elif position == 0 and hurst < hurst_max:
-                    if abs(z_score) > Z_ENTRY:
-                        qa, qb, _, _ = determine_sizing(pa, pb, beta, spread_vol)
-                        if qa > 0 and qb > 0:
-                            etype = "in_long" if z_score < 0 else "in_short"
-                            enter_pair(qa, qb, z_score, beta, hurst, spread_vol, pa, pb, etype)
+                if hurst < hurst_max and abs(z_score) > Z_ENTRY:
+                    capital = assigned_cptl
+                    vol_scale = min(1.0, 0.15 / vol) if vol > 0 else 1.0
+                    alloc = capital * vol_scale
 
-            time.sleep(trade_interval)
+                    va = alloc / (1.0 + abs(beta))
+                    vb = alloc - va
+                    tqa = int(va / pa)
+                    tqb = int(vb / pb)
+
+                    e_type = "in_long" if z_score < -Z_ENTRY else "in_short"
+
+                    enter_pair(tqa, tqb, z_score, beta, hurst, vol, pa, pb, e_type) 
+
+            time.sleep(60)
 
         except Exception as e:
-            print(f"!!! Crash: {e}!!! ")
+            print(f"!!! error in main loop: {e} !!!")
             traceback.print_exc()
-            send_tele(f"Crash: {e}", "ERROR")
-            time.sleep(600)
+            time.sleep(60)
+
 
 
 if __name__ == "__main__":
-    liveLoop()
+    live_loop()

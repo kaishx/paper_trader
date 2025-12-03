@@ -1,3 +1,5 @@
+# if you wish to mimic how the wfa works, you can use optimizer on every 1st and 3rd sundays of the month.
+
 import os
 import json
 import time
@@ -31,6 +33,7 @@ else:
     print("!!! pairs.json not found. !!!")
 
 cptl = 100000.0
+ABS_DOLLAR_STOP = 2500.0
 txfee = 0.0001
 slippagefee = 0.01
 
@@ -121,23 +124,26 @@ def calc_spread_z(data, lookback=390):
 
 
 def checkADF(data):
-    spread = data['Spread'].values
-    spread = spread[~np.isnan(spread)]
-    if len(spread) < 30:
-        return 1.0
+    if data.empty: return 1.0
+    Y = data['Log_A']
+    X = data['Log_B']
+    X = sm.add_constant(X)
     try:
-        adf_result = adfuller(spread)
-        p_value = adf_result[1]
+        model = sm.OLS(Y, X).fit()
+        residuals = model.resid
+        adf_result = adfuller(residuals)
+        return adf_result[1]
     except:
-        p_value = 1.0
-    return p_value
+        return 1.0
 
 
 @njit
 def backtest(close_a, close_b, z_score, hurst, beta, spread_std,
-                        z_entry, z_exit, z_stop_loss, cptl, tx_fee, slippage,
-                        hurst_thresh):
-    # gonna consider splitting this into two functions later down the line cuz this funciton is pretty long.
+             z_entry, z_exit, z_stop_loss, cptl, tx_fee, slippage,
+             hurst_thresh, abs_stop):
+
+    # consider splitting this in the future to make it more readable
+
     n_bars = len(close_a)
     pnl_array = np.zeros(n_bars, dtype=np.float64)
     position = 0.0
@@ -149,25 +155,35 @@ def backtest(close_a, close_b, z_score, hurst, beta, spread_std,
     for i in range(n_bars - 1):
         current_z = z_score[i]
         current_hurst = hurst[i]
-
         current_beta = beta[i]
         current_vol = spread_std[i]
 
         prev_position = position
-
         current_price_a = close_a[i]
         current_price_b = close_b[i]
-
         next_price_a = close_a[i + 1]
         next_price_b = close_b[i + 1]
-
         is_final_bar = (i == n_bars - 2)
+
+        is_dollar_stop = False
+        if prev_position != 0:
+            pnl_check_a = 0.0
+            pnl_check_b = 0.0
+            if prev_position == 1:
+                pnl_check_a = (current_price_a - entry_price_a) * n_A
+                pnl_check_b = (entry_price_b - current_price_b) * n_B
+            else:
+                pnl_check_a = (entry_price_a - current_price_a) * n_A
+                pnl_check_b = (current_price_b - entry_price_b) * n_B
+
+            if (pnl_check_a + pnl_check_b) <= -abs_stop:
+                is_dollar_stop = True
 
         if prev_position != 0:
             is_mean_reversion = np.abs(current_z) <= z_exit
-            is_stop_loss = np.abs(current_z) >= z_stop_loss
+            is_z_stop = np.abs(current_z) >= z_stop_loss
 
-            if is_mean_reversion or is_stop_loss or is_final_bar:
+            if is_mean_reversion or is_z_stop or is_dollar_stop or is_final_bar:
                 if prev_position == 1:
                     pnl_a = (next_price_a - entry_price_a) * n_A
                     pnl_b = (entry_price_b - next_price_b) * n_B
@@ -176,33 +192,31 @@ def backtest(close_a, close_b, z_score, hurst, beta, spread_std,
                     pnl_b = (next_price_b - entry_price_b) * n_B
 
                 gross_pnl = pnl_a + pnl_b
-
                 entry_val = entry_price_a * n_A + entry_price_b * n_B
                 exit_val = next_price_a * n_A + next_price_b * n_B
-                cost_fee = tx_fee * (entry_val + exit_val)
-                cost_slip = slippage * (n_A + n_B) * 2.0
+                cost = tx_fee * (entry_val + exit_val) + (slippage * (n_A + n_B) * 2.0)
 
-                pnl_array[i + 1] = gross_pnl - (cost_fee + cost_slip)
+                pnl_array[i + 1] = gross_pnl - cost
                 position = 0.0
+                n_A = 0.0
+                n_B = 0.0
 
         elif prev_position == 0 and not is_final_bar:
             if np.abs(current_z) > z_entry and current_hurst < hurst_thresh:
-
                 vol_scale = 1.0
                 if current_vol > 0:
                     vol_scale = 0.15 / current_vol
                     if vol_scale > 1.0: vol_scale = 1.0
 
                 adj_capital = cptl * vol_scale
-
                 b_abs = np.abs(current_beta)
                 if b_abs == 0: b_abs = 1.0
 
-                val_b = adj_capital / (1.0 + b_abs)
-                val_a = adj_capital - val_b
+                val_a = adj_capital / (1.0 + b_abs)
+                val_b = adj_capital - val_a
 
-                n_A = np.floor(val_a / current_price_a)
-                n_B = np.floor(val_b / current_price_b)
+                n_A = np.floor(val_a / next_price_a)
+                n_B = np.floor(val_b / next_price_b)
 
                 entry_price_a = next_price_a
                 entry_price_b = next_price_b
@@ -216,7 +230,7 @@ def backtest(close_a, close_b, z_score, hurst, beta, spread_std,
 
 
 def prepData(client, symbol_a, symbol_b):
-    print(f"getting 1yr data from ({START_DATE.strftime('%Y-%m-%d')}) for {symbol_a}/{symbol_b}...")
+    print(f"getting data from ({START_DATE.strftime('%Y-%m-%d')}) for {symbol_a}/{symbol_b}...")
     req = StockBarsRequest(
         symbol_or_symbols=[symbol_a, symbol_b],
         timeframe=TimeFrame(15, TimeFrameUnit.Minute),
@@ -240,44 +254,46 @@ def prepData(client, symbol_a, symbol_b):
 
 
 def getBestParams(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
-    df = calc_spread_z(df)
+    bars_per_day = 26
+    required_bars = 60 * bars_per_day
 
-    current_p_value = checkADF(df)
-    print(f"Current ADF p-value: {current_p_value:.4f} (Recorded, not filtered)")
-    # the amount of days this optimzier "optimizes" on is not selected for any great reason, but its like 4x the lookbackwindow of the trader at least.
-    # i think its a decent responsive window for optimizing the best params
-    opt_start_idx = max(0, len(df) - int(60 * 26))
-    opt_df = df.iloc[opt_start_idx:].copy()
-
-    if len(opt_df) < 100:
-        print("!!! Not enough recent data to optimize. !!!")
+    if len(df) < required_bars + 100:
+        print(f"!!! Not enough data: Have {len(df)}, Need {required_bars} !!!")
         return None
 
-    close_a = opt_df[f'Close_{symbol_a}'].values
-    close_b = opt_df[f'Close_{symbol_b}'].values
-    z_score = opt_df['Z_Score'].values
-    hurst = opt_df['Hurst'].values
+    opt_df = df.iloc[-required_bars:].copy()
+    df_calc = calc_spread_z(df.copy(), lookback=390)
+    opt_df_ready = df_calc.iloc[-required_bars:].copy()
 
-    beta = opt_df['Beta'].values
-    spread_std = opt_df['Spread_Std'].values
+    # CHECK ADF ON OLS (Critical Fix)
+    adf_p_value = checkADF(opt_df_ready)
+    print(f"ADF (OLS) p-value: {adf_p_value:.4f}")
+
+    if adf_p_value > 0.20:  # Match cpp_wfa threshold
+        print(f"Skipping {symbol_a}/{symbol_b}: Non-stationary (p={adf_p_value:.3f})")
+        return None
+
+    close_a = opt_df_ready[f'Close_{symbol_a}'].values
+    close_b = opt_df_ready[f'Close_{symbol_b}'].values
+    z_score = opt_df_ready['Z_Score'].values
+    hurst = opt_df_ready['Hurst'].values
+    beta = opt_df_ready['Beta'].values
+    spread_std = opt_df_ready['Spread_Std'].values
 
     best_sharpe = -999.0
-    best_params = (2.1, 0.1, 3.3)
+    best_params = None
 
     param_combi = list(itertools.product(Z_ENTRY_GRID, Z_EXIT_GRID, Z_STOP_LOSS_GRID))
 
     for z_entry, z_exit, z_sl in param_combi:
-        if not (z_exit < z_entry < z_sl):
-            continue
+        if not (z_exit < z_entry < z_sl): continue
 
         pnl = backtest(close_a, close_b, z_score, hurst, beta, spread_std,
-                                  z_entry, z_exit, z_sl,
-                                  cptl, tx_fee, slippage, hurstMax)
+                       z_entry, z_exit, z_sl,
+                       cptl, tx_fee, slippage, hurstMax, ABS_DOLLAR_STOP)
 
         trade_count = np.count_nonzero(pnl)
-
-        if trade_count < minTrades:
-            continue
+        if trade_count < minTrades: continue
 
         total_pnl = np.sum(pnl)
         if total_pnl == 0:
@@ -293,8 +309,7 @@ def getBestParams(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
             best_sharpe = sharpe
             best_params = (z_entry, z_exit, z_sl)
 
-    if best_sharpe == -999.0:
-        return None
+    if best_params is None: return None
 
     return {
         "z_entry": best_params[0],
@@ -302,9 +317,8 @@ def getBestParams(symbol_a, symbol_b, df, cptl, tx_fee, slippage):
         "z_sl": best_params[2],
         "sharpe": best_sharpe,
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "adf_p_value": current_p_value
+        "adf_p_value": adf_p_value
     }
-
 
 if __name__ == "__main__":
     client = StockHistoricalDataClient(API_KEY_ID, API_SECRET_KEY)
