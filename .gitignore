@@ -1,0 +1,14 @@
+.env
+
+__pycache__/
+*.pyc
+
+trader_data/
+*.pkl
+state_*.json
+cache_*.pkl
+
+.idea/
+.vscode/
+
+*.log
