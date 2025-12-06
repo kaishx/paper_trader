@@ -667,11 +667,42 @@ def live_loop():
             except:
                 acc_eqty = 0.0
 
+            if abs(qa) > 0 and entry_a == 0:
+                if entry_price_a is not None and entry_price_a > 0:
+                    entry_a = entry_price_a
+                    print(f"alpaca returned 0 entry for {ASSET_A}, using cached state: {entry_a}")
+
+            if abs(qb) > 0 and entry_b == 0:
+                if entry_price_b is not None and entry_price_b > 0:
+                    entry_b = entry_price_b
+                    print(f"alpaca returned 0 entry for {ASSET_B}, using cached state: {entry_b}")
+
             unrealized_pnl = 0.0
-            if abs(qa) > 0 or abs(qb) > 0:
-                pnl_a = (pa - entry_a) * qa if entry_a > 0 else 0
-                pnl_b = (pb - entry_b) * qb if entry_b > 0 else 0
+            valid_pnl = True
+
+            if abs(qa) > 0:
+                if entry_a > 0:
+                    pnl_a = (pa - entry_a) * qa
+                else:
+                    print(f"!!! missing cost basis for {ASSET_A} !!!")
+                    valid_pnl = False
+                    pnl_a = 0
+
+            if abs(qb) > 0:
+                if entry_b > 0:
+                    pnl_b = (pb - entry_b) * qb
+                else:
+                    print(f"!!! missing cost basis for {ASSET_B} !!!")
+                    valid_pnl = False
+                    pnl_b = 0
+
+            if valid_pnl and (abs(qa) > 0 or abs(qb) > 0):
                 unrealized_pnl = pnl_a + pnl_b
+
+                # ONLY check stops if PnL is valid
+                if unrealized_pnl < -ABS_DOLLAR_STOP:
+                    print(f"!!! DOLLAR STOP TRIGGERED (PnL: {unrealized_pnl:.2f}) !!!")
+                    liquidate("DOLLAR STOP")
 
             status_msg = f"Z:{z_score:.2f} | PnL:${unrealized_pnl:.1f} | ADF(Monitor):{adf_p:.2f}"
             print(status_msg)
