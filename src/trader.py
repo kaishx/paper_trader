@@ -58,10 +58,10 @@ if len(sys.argv) != 3:
     ASSET_A = "JPM"
     ASSET_B = "SAP"
     print(f"Inputs not found, use case: python #trader.py <ASSET_A> <ASSET_B>. Defaulting to {ASSET_A}/{ASSET_B}")
-    sys.exit(1)
 
-ASSET_A = sys.argv[1]
-ASSET_B = sys.argv[2]
+if len(sys.argv) == 3:
+    ASSET_A = sys.argv[1]
+    ASSET_B = sys.argv[2]
 
 print(f"Trader started for pair: {ASSET_A}/{ASSET_B}")
 
@@ -74,7 +74,7 @@ ABS_DOLLAR_STOP = 2500.0
 Z_ENTRY = 2.3
 Z_EXIT = 0.1
 Z_STOP_LOSS = 4.5
-LOAD_LOOKBACK = 1560 # 60 days * 26 bars
+LOAD_LOOKBACK = 4000
 CALC_WINDOW = 390
 
 last_heartbeat_time = datetime.min.replace(tzinfo=timezone.utc)
@@ -329,23 +329,16 @@ def dataFilter(asset_a, asset_b, lookback, timeframe=TimeFrame(15, TimeFrameUnit
 
         data_est = data.tz_convert('US/Eastern')
 
-        # RTH Filter
         rth_filter = ((data_est.index.hour > 9) | ((data_est.index.hour == 9) & (data_est.index.minute >= 30))) & (
                 data_est.index.hour < 16)
         data = data[rth_filter]
 
-        MAX_BARS_TO_KEEP = 4 * 24 * 60
         if len(data) > lookback:
             data = data.iloc[-lookback:]
             datacache = data.copy()
 
         if data.empty or len(data) < lookback:
-            print(f"!!! Warning! only {len(data)} bars. Need {lookback}")
-            return None
-
-        if data.empty or len(data) < lookback:
-            print(f"!!! Warning! only {len(data)} bars after filtering. Need {lookback}")
-            return None
+            print(f"!!! Warning! only {len(data)} bars. Desired Warmup: {lookback}")
 
         data['Log_A'] = np.log(data[f'Close_{asset_a}'])
         data['Log_B'] = np.log(data[f'Close_{asset_b}'])
@@ -452,7 +445,7 @@ def determine_sizing(asset_a_price, asset_b_price, beta, spread_volatility):
     b = abs(beta)
     if b == 0: b = 1.0  # PREVENT div by 0 here
 
-    V_A = V_Total * (b / (1.0 + b))
+    V_A = V_Total * (1.0 / (1.0 + b))
     V_B = V_Total - V_A
 
     qty_a = int(math.floor(V_A / asset_a_price))
@@ -464,28 +457,24 @@ def determine_sizing(asset_a_price, asset_b_price, beta, spread_volatility):
 def getCurrentPos(asset_a, asset_b):
     try:
         positions = trading_client.get_all_positions()
-        pos_a = 0
-        pos_b = 0
+        pos_a = 0.0
+        pos_b = 0.0
+        entry_a = 0.0
+        entry_b = 0.0
 
         for p in positions:
             if p.symbol == asset_a:
                 pos_a = float(p.qty)
+                entry_a = float(p.avg_entry_price) if p.avg_entry_price else 0.0
             elif p.symbol == asset_b:
                 pos_b = float(p.qty)
+                entry_b = float(p.avg_entry_price) if p.avg_entry_price else 0.0
 
-        if pos_a == 0 and pos_b == 0:
-            return 0, 0, 0
-
-        if (pos_a > 0 and pos_b < 0):
-            return 1, pos_a, pos_b
-        elif (pos_a < 0 and pos_b > 0):
-            return -1, pos_a, pos_b
-
-        return 999, pos_a, pos_b
+        return pos_a, pos_b, entry_a, entry_b
 
     except Exception as e:
         print(f"!!! getCurrentPos failed: {e} !!!")
-        return 0, 0, 0
+        return 0.0, 0.0, 0.0, 0.0
 
 
 def submit_order(symbol, qty, side, limit_price=None, order_type='LIMIT'):
@@ -553,7 +542,7 @@ def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPric
         submit_order(ASSET_A, int(filled_a), rb_side, order_type='MARKET')
         return False
 
-    print("Entry done")
+    print(f"Entry Done for {ASSET_A}/{ASSET_B}")
     entry_price_a = avg_a
     entry_price_b = avg_b
     entry_pos_type = entry_type
@@ -566,14 +555,12 @@ def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPric
 
 
 def liquidate(reason="No reason provided"):
-    global entry_price_a, entry_price_b, entry_pos_type
-
     print(f"[LIQUIDATE] {reason}")
 
-    _, qty_a, qty_b = getCurrentPos(ASSET_A, ASSET_B)
+    qty_a, qty_b, entry_a, entry_b = getCurrentPos(ASSET_A, ASSET_B)
 
-    avg_exit_a = 0
-    avg_exit_b = 0
+    avg_exit_a = 0.0
+    avg_exit_b = 0.0
 
     if qty_a != 0:
         side = OrderSide.SELL if qty_a > 0 else OrderSide.BUY
@@ -584,18 +571,15 @@ def liquidate(reason="No reason provided"):
         _, _, _, avg_exit_b = submit_order(ASSET_B, int(abs(qty_b)), side, order_type='MARKET')
 
     pnl = 0.0
-    if entry_price_a and entry_price_b:
-        if qty_a > 0:
-            pnl += qty_a * (avg_exit_a - entry_price_a)
-        elif qty_a < 0:
-            pnl += abs(qty_a) * (entry_price_a - avg_exit_a)
 
-        if qty_b > 0:
-            pnl += qty_b * (avg_exit_b - entry_price_b)
-        elif qty_b < 0:
-            pnl += abs(qty_b) * (entry_price_b - avg_exit_b)
+    if entry_a > 0 and avg_exit_a > 0:
+        pnl += (avg_exit_a - entry_a) * qty_a
+
+    if entry_b > 0 and avg_exit_b > 0:
+        pnl += (avg_exit_b - entry_b) * qty_b
 
     send_tele(f"Liquidated {ASSET_A}/{ASSET_B} due to {reason}\nRealized PnL: ${pnl:.2f}", "EXIT")
+
     clear_state()
 
 
@@ -621,8 +605,26 @@ def statusupdate(current_z, beta, p_value, hurst, price_a, price_b, position, po
         last_heartbeat_time = datetime.now(timezone.utc)
 
 
+def isMarketOpen():
+    clock = trading_client.get_clock()
+
+    if clock.is_open:
+        return True
+
+    now = datetime.now(timezone.utc)
+    next_open = clock.next_open
+    sleeptime = (next_open - now).total_seconds()
+
+    if sleeptime > 0:
+        msg = f"{ASSET_A}/{ASSET_B}: Market is Closed. Next Open: {next_open.isoformat()}. Sleeping for {sleeptime / 3600:.2f} hours..."
+        print(msg)
+        send_tele(msg, "STATUS")
+        time.sleep(sleeptime + 60)
+        return False
+
+    return True
+
 def live_loop():
-    global entry_price_a, entry_price_b, entry_pos_type
     ensure_persistence_dir()
     load_state()
 
@@ -630,64 +632,67 @@ def live_loop():
 
     while True:
         try:
+            if not isMarketOpen():
+                continue
+
             if not load_param():
                 print("Parameters not found. Sleeping...")
-                time.sleep(300);
+                time.sleep(300)
                 continue
 
             if not OPTIMIZER_TRADABLE:
                 print(f"Pair {ASSET_A}/{ASSET_B} non-stationary (p={OPTIMIZER_ADF_P}). Sleeping 1 hour.")
-                time.sleep(3600);
+                time.sleep(3600)
                 continue
 
             df = dataFilter(ASSET_A, ASSET_B, LOAD_LOOKBACK)
             if df is None or len(df) < 500:
-                print("Waiting for data buffer...");
-                time.sleep(60);
+                print("Waiting for data buffer...")
+                time.sleep(60)
                 continue
 
             beta, z_score, vol, adf_p, hurst = calc_signal(df.copy())
-            pa, pb = get_live_price()
-            if pa == 0 or pb == 0: continue
 
-            pos = trading_client.get_all_positions()
-            qa = next((float(p.qty) for p in pos if p.symbol == ASSET_A), 0)
-            qb = next((float(p.qty) for p in pos if p.symbol == ASSET_B), 0)
+            pa, pb = get_live_price()
+
+            if pa <= 0 or pb <= 0 or np.isnan(pa) or np.isnan(pb):
+                print("Invalid price data (0 or NaN). Retrying...")
+                time.sleep(10)
+                continue
+
+            qa, qb, entry_a, entry_b = getCurrentPos(ASSET_A, ASSET_B)
 
             try:
                 acc_eqty = float(trading_client.get_account().equity)
             except:
                 acc_eqty = 0.0
 
-            if abs(qa) > 0 and entry_price_a is None:
-                entry_price_a = pa;
-                entry_price_b = pb
-
             unrealized_pnl = 0.0
-            if abs(qa) > 0 and entry_price_a:
-                val_a = (pa - entry_price_a) * abs(qa) if qa > 0 else (entry_price_a - pa) * abs(qa)
-                val_b = (pb - entry_price_b) * abs(qb) if qb > 0 else (entry_price_b - pb) * abs(qb)
-                unrealized_pnl = val_a + val_b
+            if abs(qa) > 0 or abs(qb) > 0:
+                pnl_a = (pa - entry_a) * qa if entry_a > 0 else 0
+                pnl_b = (pb - entry_b) * qb if entry_b > 0 else 0
+                unrealized_pnl = pnl_a + pnl_b
 
             status_msg = f"Z:{z_score:.2f} | PnL:${unrealized_pnl:.1f} | ADF(Monitor):{adf_p:.2f}"
             print(status_msg)
 
             pos_str = "LONG" if qa > 0 else "SHORT" if qa < 0 else "FLAT"
+
             statusupdate(z_score, beta, adf_p, hurst, pa, pb, pos_str, qa, qb, acc_eqty, datetime.now(timezone.utc),
                          True)
 
-            if abs(qa) > 0:
+            if abs(qa) > 0 or abs(qb) > 0:
                 if unrealized_pnl < -ABS_DOLLAR_STOP:
-                    print("!!! DOLLAR STOP TRIGGERED !!!")
-                    liquidate("DOLLAR STOP") 
+                    print(f"!!! DOLLAR STOP TRIGGERED (PnL: {unrealized_pnl:.2f}) !!!")
+                    liquidate("DOLLAR STOP")
 
                 elif abs(z_score) > Z_STOP_LOSS:
                     print("!!! Z STOP TRIGGERED !!!")
-                    liquidate("Z-SCORE STOP") 
+                    liquidate("Z-SCORE STOP")
 
                 elif abs(z_score) < Z_EXIT:
                     print("!!! TARGET EXIT !!!")
-                    liquidate("TARGET EXIT") 
+                    liquidate("TARGET EXIT")
 
             else:
                 if hurst < hurst_max and abs(z_score) > Z_ENTRY:
@@ -702,7 +707,7 @@ def live_loop():
 
                     e_type = "in_long" if z_score < -Z_ENTRY else "in_short"
 
-                    enter_pair(tqa, tqb, z_score, beta, hurst, vol, pa, pb, e_type) 
+                    enter_pair(tqa, tqb, z_score, beta, hurst, vol, pa, pb, e_type)
 
             time.sleep(60)
 
@@ -710,8 +715,6 @@ def live_loop():
             print(f"!!! error in main loop: {e} !!!")
             traceback.print_exc()
             time.sleep(60)
-
-
 
 if __name__ == "__main__":
     live_loop()
