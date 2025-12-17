@@ -6,26 +6,47 @@ import json
 import os
 
 PAIRS_CONFIG_FILE = "pairs.json"
+PARAMS_FILE = "optimized_params.json"
 
+# 1. Load the list of all potential pairs
 if not os.path.exists(PAIRS_CONFIG_FILE):
     raise FileNotFoundError(f"!!! {PAIRS_CONFIG_FILE} not found. please create/import it !!!")
 
 with open(PAIRS_CONFIG_FILE, "r") as f:
-    pairs = json.load(f)
+    all_pairs = json.load(f)
 
-print(f"loaded {len(pairs)} pairs from config.")
+# 2. Load the optimized parameters to use as a filter
+if not os.path.exists(PARAMS_FILE):
+    raise FileNotFoundError(f"!!! {PARAMS_FILE} not found. No pairs can be filtered !!!")
 
-traderScript = "trader.py"  # make sure the name is correct and debugs are not activated
-delay = 10   # seconds between launching each trader
+with open(PARAMS_FILE, "r") as f:
+    optimized_params = json.load(f)
+
+# 3. Filter pairs: Only keep pairs where "ASSET_A/ASSET_B" exists in optimized_params
+filtered_pairs = []
+for pair in all_pairs:
+    asset_a, asset_b = pair[0], pair[1]
+    pair_key = f"{asset_a}/{asset_b}"
+
+    if pair_key in optimized_params:
+        filtered_pairs.append(pair)
+    else:
+        print(f"Skipping {pair_key}: Not found in {PARAMS_FILE}")
+
+print(f"Loaded {len(filtered_pairs)} active pairs from config.")
+
+traderScript = "trader.py"
+delay = 5  # seconds between launching each trader
+
 
 def monitor(proc, asset_a, asset_b):
     for line in iter(proc.stdout.readline, ''):
         print(f"[{asset_a}/{asset_b}] {line.strip()}")
     print(f"[{asset_a}/{asset_b}] Process terminated.")
 
+
 def start(pairs_list):
     processes = []
-
     for pair in pairs_list:
         asset_a = pair[0]
         asset_b = pair[1]
@@ -35,20 +56,18 @@ def start(pairs_list):
             stderr=subprocess.PIPE,
             bufsize=1,
             text=True,
-            encoding="utf-8",  # explicitly force utf8 so i can prevent some crashes in the logs
-            errors="replace"  # prevnt crashes on some characters so the thing keeps running properly
+            encoding="utf-8",
+            errors="replace"
         )
         processes.append((proc, asset_a, asset_b))
-
         threading.Thread(target=monitor, args=(proc, asset_a, asset_b), daemon=True).start()
-
         time.sleep(delay)
-
     return processes
 
 
 if __name__ == "__main__":
-    procs = start(pairs)
+    # Launch only the filtered list
+    procs = start(filtered_pairs)
     print(f"{len(procs)} traders started.")
 
     try:
