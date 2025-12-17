@@ -8,21 +8,18 @@ import os
 PAIRS_CONFIG_FILE = "pairs.json"
 PARAMS_FILE = "optimized_params.json"
 
-# 1. Load the list of all potential pairs
 if not os.path.exists(PAIRS_CONFIG_FILE):
     raise FileNotFoundError(f"!!! {PAIRS_CONFIG_FILE} not found. please create/import it !!!")
 
 with open(PAIRS_CONFIG_FILE, "r") as f:
     all_pairs = json.load(f)
 
-# 2. Load the optimized parameters to use as a filter
 if not os.path.exists(PARAMS_FILE):
     raise FileNotFoundError(f"!!! {PARAMS_FILE} not found. No pairs can be filtered !!!")
 
 with open(PARAMS_FILE, "r") as f:
     optimized_params = json.load(f)
 
-# 3. Filter pairs: Only keep pairs where "ASSET_A/ASSET_B" exists in optimized_params
 filtered_pairs = []
 for pair in all_pairs:
     asset_a, asset_b = pair[0], pair[1]
@@ -66,7 +63,6 @@ def start(pairs_list):
 
 
 if __name__ == "__main__":
-    # Launch only the filtered list
     procs = start(filtered_pairs)
     print(f"{len(procs)} traders started.")
 
@@ -77,3 +73,4 @@ if __name__ == "__main__":
         print("keyboardinterrupt detected")
         for proc, _, _ in procs:
             proc.terminate()
+
