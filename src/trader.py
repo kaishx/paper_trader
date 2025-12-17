@@ -747,9 +747,8 @@ def live_loop():
             if valid_pnl and (abs(qa) > 0 or abs(qb) > 0):
                 unrealized_pnl = pnl_a + pnl_b
 
-                # ONLY check stops if PnL is valid
                 if unrealized_pnl < -ABS_DOLLAR_STOP:
-                    print(f"!!! DOLLAR STOP TRIGGERED (PnL: {unrealized_pnl:.2f}) !!!")
+                    print(f"!!! dollar stop triggered (PnL: {unrealized_pnl:.2f}) !!!")
                     liquidate("DOLLAR STOP")
 
             status_msg = f"Z:{z_score:.2f} | PnL:${unrealized_pnl:.1f} | ADF(Monitor):{adf_p:.2f}"
@@ -762,19 +761,19 @@ def live_loop():
 
             if abs(qa) > 0 or abs(qb) > 0:
                 if unrealized_pnl < -ABS_DOLLAR_STOP:
-                    print(f"!!! DOLLAR STOP TRIGGERED (PnL: {unrealized_pnl:.2f}) !!!")
+                    print(f"!!! dollar stop triggered (PnL: {unrealized_pnl:.2f}) !!!")
                     liquidate("DOLLAR STOP")
 
                 elif abs(z_score) > Z_STOP_LOSS:
-                    print("!!! Z STOP TRIGGERED !!!")
+                    print("!!! z stop triggered !!!")
                     liquidate("Z-SCORE STOP")
 
                 elif abs(z_score) < Z_EXIT:
-                    print("!!! TARGET EXIT !!!")
+                    print("!!! target exit hit, exiting !!!")
                     liquidate("TARGET EXIT")
 
             else:
-                if hurst < hurst_max and abs(z_score) > Z_ENTRY:
+                if hurst < hurst_max and Z_ENTRY < abs(z_score) < Z_STOP_LOSS:
                     capital = assigned_cptl
                     vol_scale = min(1.0, 0.15 / vol) if vol > 0 else 1.0
                     alloc = capital * vol_scale
