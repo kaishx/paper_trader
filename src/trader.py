@@ -74,7 +74,7 @@ ABS_DOLLAR_STOP = 2500.0
 Z_ENTRY = 2.3
 Z_EXIT = 0.1
 Z_STOP_LOSS = 4.5
-LOAD_LOOKBACK = 4000
+LOAD_LOOKBACK = 1500
 CALC_WINDOW = 390
 
 last_heartbeat_time = datetime.min.replace(tzinfo=timezone.utc)
@@ -226,7 +226,7 @@ def get_price(asset_a, asset_b):
                 q = res[sym]
 
                 # make sure data is not too stale. data can get sussy baka on IEX)
-                if (now - q.timestamp).total_seconds() > 120:
+                if (now - q.timestamp).total_seconds() > 240:
                     print(f"Quote too stale for {sym} ({(now - q.timestamp).total_seconds()}s)")
                     return np.nan, np.nan
 
@@ -481,6 +481,9 @@ def submit_order(symbol, qty, side, limit_price=None, order_type='LIMIT'):
     try:
         if qty <= 0: return False, 0, None, 0
 
+        if limit_price is not None:
+            limit_price = round(limit_price, 2)
+
         req = None
         if order_type == 'MARKET':
             req = MarketOrderRequest(symbol=symbol, qty=qty, side=side, time_in_force=TimeInForce.DAY)
@@ -491,24 +494,37 @@ def submit_order(symbol, qty, side, limit_price=None, order_type='LIMIT'):
             print(f"placed limit order: {side} {qty} {symbol} @ {limit_price:.2f}")
 
         order = trading_client.submit_order(req)
+        order_id = order.id
 
-        for _ in range(30):
+        for _ in range(60):
             time.sleep(1)
-            o = trading_client.get_order_by_id(order.id)
+            o = trading_client.get_order_by_id(order_id)
+
             if o.status == 'filled':
-                return True, float(o.filled_qty), o.id, float(o.filled_avg_price or 0)
+                return True, float(o.filled_qty), order_id, float(o.filled_avg_price or 0)
+
             if o.status in ['canceled', 'rejected', 'expired']:
-                return False, float(o.filled_qty), o.id, 0
+                print(f"Order {order_id} ended with status: {o.status}")
+                return False, float(o.filled_qty or 0), order_id, 0
 
-        if order_type == 'LIMIT':
-            print(f"!!! order {order.id} timed out. Canceling. !!!")
-            trading_client.cancel_order(order.id)
+        print(f"!!! order {order_id} timed out. Checking for partials... !!!")
 
-        return False, 0, order.id, 0
+        o = trading_client.get_order_by_id(order_id)
+        filled = float(o.filled_qty or 0)
+
+        if filled > 0:
+            print(f"Partial fill detected ({filled}/{qty}). cancelling remainder.")
+            trading_client.cancel_order_by_id(order_id)
+            # Return TRUE so the bot proceeds with what it got
+            return True, filled, order_id, float(o.filled_avg_price or limit_price)
+
+        trading_client.cancel_order_by_id(order_id)
+        return False, 0, order_id, 0
 
     except Exception as e:
         print(f"!!! order failed: {e}!!!")
         return False, 0, None, 0
+
 
 def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPriceA, lastPriceB, entry_type):
     global last_trade_time, entry_pos_type, entry_price_a, entry_price_b
@@ -524,7 +540,6 @@ def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPric
         print("!!! buying of leg A failed completely (0 filled). Aborting. !!!")
         return False
 
-    # calculate B if A somehow only partially fills. but shouldnt if what i read on alpaca api docs is correct
     fill_ratio = filled_a / qty_a
     qty_b_adjusted = int(math.floor(qty_b * fill_ratio))
 
@@ -533,13 +548,40 @@ def enter_pair(qty_a, qty_b, current_z, beta, hurst, spread_volatility, lastPric
 
     print(f"Leg A filled ({filled_a}). Adjusting Leg B to {qty_b_adjusted} (Ratio: {fill_ratio:.2f})...")
 
+    # 3. Submit Leg B
     success_b, filled_b, _, avg_b = submit_order(ASSET_B, qty_b_adjusted, side_b, order_type='MARKET')
 
     if not success_b or filled_b == 0:
-        print("!!! Leg B Market Order Failed. Rolling back Leg A. !!!")
-        send_tele(f"order fail: {ASSET_A} filled {filled_a}, {ASSET_B} failed. Rolling back.", "ERROR")
+        print("!!! leg b failed, rolling back!!!")
+        send_tele(f"Entry failed: {ASSET_A} filled {filled_a}, {ASSET_B} failed. Rolling back {ASSET_A}.", "CRITICAL")
+
         rb_side = OrderSide.SELL if side_a == OrderSide.BUY else OrderSide.BUY
-        submit_order(ASSET_A, int(filled_a), rb_side, order_type='MARKET')
+
+        rollback_attempts = 0
+        max_retries = 5
+        position_closed = False
+
+        while rollback_attempts < max_retries:
+            rb_success, rb_filled, _, _ = submit_order(ASSET_A, int(filled_a), rb_side, order_type='MARKET')
+
+            curr_pos_a, _, _, _ = getCurrentPos(ASSET_A, ASSET_B)
+
+            if curr_pos_a == 0:
+                print(f"Rollback successful. {ASSET_A} is flat.")
+                position_closed = True
+                break
+            else:
+                print(
+                    f"!!! Rollback attempt {rollback_attempts + 1} failed/partial. Remaining: {curr_pos_a}. Retrying...")
+                filled_a = abs(curr_pos_a)
+                rollback_attempts += 1
+                time.sleep(1)
+
+        if not position_closed:
+            send_tele(f"FATAL: Rollback FAILED for {ASSET_A}. MANUAL INTERVENTION REQUIRED.", "FATAL")
+            print("!!! terminating script to prevent further damage due to failure of rollback !!!")
+            sys.exit(1)
+
         return False
 
     print(f"Entry Done for {ASSET_A}/{ASSET_B}")
@@ -580,7 +622,13 @@ def liquidate(reason="No reason provided"):
 
     send_tele(f"Liquidated {ASSET_A}/{ASSET_B} due to {reason}\nRealized PnL: ${pnl:.2f}", "EXIT")
 
-    clear_state()
+    qa_check, qb_check, _, _ = getCurrentPos(ASSET_A, ASSET_B)
+
+    if abs(qa_check) == 0 and abs(qb_check) == 0:
+        print("clearing state")
+        clear_state()
+    else:
+        print(f"!!! liquidation incomplete (currently holding: {qa_check}/{qb_check}). keeping the state for safety. !!!")
 
 
 def statusupdate(current_z, beta, p_value, hurst, price_a, price_b, position, pos_a, pos_b, acc_eqty, loop_start_time,
