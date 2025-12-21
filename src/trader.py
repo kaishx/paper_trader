@@ -773,7 +773,7 @@ def live_loop():
                     liquidate("TARGET EXIT")
 
             else:
-                if hurst < hurst_max and Z_ENTRY < abs(z_score) < Z_STOP_LOSS:
+                if hurst < hurst_max and Z_ENTRY < abs(z_score) < (Z_ENTRY + Z_STOP_LOSS) / 2:
                     capital = assigned_cptl
                     vol_scale = min(1.0, 0.15 / vol) if vol > 0 else 1.0
                     alloc = capital * vol_scale
