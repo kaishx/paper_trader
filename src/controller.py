@@ -73,4 +73,3 @@ if __name__ == "__main__":
         print("keyboardinterrupt detected")
         for proc, _, _ in procs:
             proc.terminate()
-
