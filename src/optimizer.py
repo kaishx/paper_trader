@@ -46,7 +46,7 @@ Z_ENTRY_GRID = [1.7, 1.9, 2.1, 2.3, 2.5]
 Z_EXIT_GRID = [0.1, 0.3, 0.5, 0.7, 0.9, 1.1]
 Z_STOP_LOSS_GRID = [3.0, 3.3, 3.6, 3.9, 4.2, 4.5]
 
-LOOKBACK_DAYS = 100
+LOOKBACK_DAYS = 140
 START_DATE = datetime.now() - timedelta(days=LOOKBACK_DAYS)
 END_DATE = datetime.now() - timedelta(days=1)
 
